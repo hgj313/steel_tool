@@ -1,1 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>钢材优化系统</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>钢材优化系统</h1>
+        
+        <!-- 设计钢材输入 -->
+        <div class="section">
+            <h2>设计钢材</h2>
+            <div class="input-group">
+                <label>上传Excel/CSV文件:</label>
+                <input type="file" id="design-file" accept=".xlsx,.xls,.csv">
+                <button onclick="uploadDesignFile()">上传</button>
+            </div>
+            <div id="design-steel-list">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>编号</th>
+                            <th>长度(mm)</th>
+                            <th>数量</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="design-table-body"></tbody>
+                </table>
+            </div>
+            <button onclick="addDesignRow()">添加钢材</button>
+        </div>
+        
+        <!-- 模数钢材输入 -->
+        <div class="section">
+            <h2>模数钢材</h2>
+            <div id="module-steel-list">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>编号</th>
+                            <th>长度(mm)</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="module-table-body"></tbody>
+                </table>
+            </div>
+            <button onclick="addModuleRow()">添加钢材</button>
+        </div>
+        
+        <!-- 参数设置 -->
+        <div class="section">
+            <h2>参数设置</h2>
+            <div class="param-group">
+                <label>允许误差(mm):</label>
+                <input type="number" id="tolerance" value="5" min="0" step="0.1">
+            </div>
+            <div class="param-group">
+                <label>切割损耗(mm):</label>
+                <input type="number" id="cut-loss" value="3" min="0" step="0.1">
+            </div>
+            <div class="param-group">
+                <label>焊接损耗(mm):</label>
+                <input type="number" id="weld-loss" value="2" min="0" step="0.1">
+            </div>
+            <div class="param-group">
+                <label>最大计算时间(秒):</label>
+                <input type="number" id="max-time" value="300" min="10">
+            </div>
+            <div class="param-group">
+                <label>期望损耗率(%):</label>
+                <input type="number" id="target-loss" value="10" min="0" max="100" step="0.1">
+            </div>
+        </div>
+        
+        <!-- 控制按钮 -->
+        <div class="control-group">
+            <button id="optimize-btn" onclick="startOptimization()">开始优化计算</button>
+            <button id="export-excel" onclick="exportExcel()" disabled>导出Excel</button>
+            <button id="export-pdf" onclick="exportPDF()" disabled>导出PDF</button>
+        </div>
+        
+        <!-- 进度显示 -->
+        <div class="progress-section">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <div id="progress-text">0%</div>
+            <div id="status-text">准备就绪</div>
+        </div>
+        
+        <!-- 结果展示 -->
+        <div id="results-section" class="hidden">
+            <h2>优化结果</h2>
+            <div class="summary">
+                <p>最低损耗率: <span id="loss-rate">0.0</span>%</p>
+                <p>节省成本: ¥<span id="cost-saving">0.00</span></p>
+                <p>计算时间: <span id="calc-time">0</span>秒</p>
+            </div>
+            <div class="results-table-container">
+                <table id="results-table">
+                    <thead>
+                        <tr>
+                            <th>组合ID</th>
+                            <th>设计钢材</th>
+                            <th>设计总长(mm)</th>
+                            <th>模数钢材</th>
+                            <th>模数总长(mm)</th>
+                            <th>差值(mm)</th>
+                            <th>损耗率(%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 
+    <script src="script.js"></script>
+</body>
+</html>
