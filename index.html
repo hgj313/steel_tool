@@ -960,6 +960,7 @@
                 // 重新加载数据
                 await loadDesignSteels();
                 await loadModuleSteels();
+                renderLossChart();
             } else {
                 errorOverlay.innerHTML = `
                     <h2><i class="fas fa-exclamation-triangle"></i> 后端连接失败</h2>
@@ -1236,6 +1237,19 @@
                 updateProgressBar(data);
             });
             
+            socket.on('optimization_complete', (result) => {
+                handleOptimizationResult(result);
+            });
+            
+            socket.on('optimization_error', (error) => {
+                showNotification('优化失败: ' + error.error, 'error');
+                statusText.textContent = "优化失败";
+                startBtn.innerHTML = '<i class="fas fa-play"></i> 开始优化';
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                isOptimizing = false;
+            });
+            
             socket.on('disconnect', () => {
                 console.log('WebSocket连接已断开');
             });
@@ -1258,6 +1272,66 @@
             } else {
                 statusText.textContent = data.stop_reason || "准备就绪";
             }
+        }
+
+        // 处理优化结果
+        function handleOptimizationResult(result) {
+            // 更新UI
+            finalLossRateElem.textContent = result.loss_rate.toFixed(2);
+            costSavingElem.textContent = `¥${result.cost_saving.toFixed(2)}`;
+            stopReasonElem.textContent = result.stop_reason;
+            
+            // 计算材料利用率 (100% - 损耗率)
+            const utilizationRate = 100 - result.loss_rate;
+            utilizationRateElem.textContent = `${utilizationRate.toFixed(2)}%`;
+            
+            combinationCountElem.textContent = result.combinations.length;
+            
+            // 计算模数钢材总用量
+            let materialUsage = 0;
+            for (const group of result.combinations) {
+                materialUsage += group.module_length;
+            }
+            // 转换为吨 (假设单位是毫米，密度7850 kg/m³)
+            const materialUsageTons = (materialUsage * 7850 / 1000000) / 1000;
+            materialUsageElem.textContent = `${materialUsageTons.toFixed(3)}吨`;
+            
+            // 显示组合详情
+            resultsBody.innerHTML = '';
+            result.combinations.forEach(comb => {
+                // 格式化模数钢材显示
+                const moduleSteels = comb.module_steels.map(m => 
+                    `${m.id}×${m.count} (${m.length}mm)`
+                ).join(', ');
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${comb.group_id}</td>
+                    <td>${comb.design_steels.join(', ')}</td>
+                    <td>${comb.design_length.toFixed(2)}</td>
+                    <td>${moduleSteels}</td>
+                    <td>${comb.module_length.toFixed(2)}</td>
+                    <td>${comb.difference.toFixed(2)}</td>
+                    <td>${comb.loss_rate.toFixed(2)}%</td>
+                `;
+                resultsBody.appendChild(row);
+            });
+            
+            // 更新图表
+            renderLossChart();
+            
+            // 启用导出按钮
+            exportExcelBtn.disabled = false;
+            exportPDFBtn.disabled = false;
+            currentOptimizationId = result.result_id;
+            
+            showNotification(`优化完成！${result.stop_reason}, 最低损耗率: ${result.loss_rate.toFixed(2)}%`);
+            
+            // 恢复按钮状态
+            startBtn.innerHTML = '<i class="fas fa-play"></i> 开始优化';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            isOptimizing = false;
         }
 
         // 开始优化
@@ -1283,63 +1357,10 @@
             
             try {
                 const response = await axios.post('/optimize', params);
-                const result = response.data;
-                
-                if (result.error) {
-                    showNotification('优化失败: ' + result.error, 'error');
-                    statusText.textContent = "优化失败";
-                } else {
-                    currentOptimizationId = result.result_id;
-                    
-                    // 更新UI
-                    finalLossRateElem.textContent = result.loss_rate.toFixed(2);
-                    costSavingElem.textContent = `¥${result.cost_saving.toFixed(2)}`;
-                    stopReasonElem.textContent = result.stop_reason;
-                    
-                    // 计算材料利用率 (100% - 损耗率)
-                    const utilizationRate = 100 - result.loss_rate;
-                    utilizationRateElem.textContent = `${utilizationRate.toFixed(2)}%`;
-                    
-                    combinationCountElem.textContent = result.combinations.length;
-                    
-                    // 计算模数钢材总用量
-                    let materialUsage = 0;
-                    for (const group of result.combinations) {
-                        materialUsage += group.module_length;
-                    }
-                    // 转换为吨 (假设单位是毫米，密度7850 kg/m³)
-                    const materialUsageTons = (materialUsage * 7850 / 1000000) / 1000;
-                    materialUsageElem.textContent = `${materialUsageTons.toFixed(3)}吨`;
-                    
-                    // 显示组合详情
-                    resultsBody.innerHTML = '';
-                    result.combinations.forEach(comb => {
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td>${comb.group_id}</td>
-                            <td>${comb.design_steels.join(', ')}</td>
-                            <td>${comb.design_length.toFixed(2)}</td>
-                            <td>${comb.module_steels.map(m => `${m.id}x${m.count}`).join(', ')}</td>
-                            <td>${comb.module_length.toFixed(2)}</td>
-                            <td>${comb.difference.toFixed(2)}</td>
-                            <td>${comb.loss_rate.toFixed(2)}%</td>
-                        `;
-                        resultsBody.appendChild(row);
-                    });
-                    
-                    // 更新图表
-                    renderLossChart();
-                    
-                    // 启用导出按钮
-                    exportExcelBtn.disabled = false;
-                    exportPDFBtn.disabled = false;
-                    
-                    showNotification(`优化完成！${result.stop_reason}, 最低损耗率: ${result.loss_rate.toFixed(2)}%`);
-                }
+                // 优化结果将通过SocketIO推送
             } catch (error) {
-                showNotification('优化失败: ' + error.message, 'error');
-                statusText.textContent = "优化失败";
-            } finally {
+                showNotification('优化启动失败: ' + error.message, 'error');
+                statusText.textContent = "优化启动失败";
                 startBtn.innerHTML = '<i class="fas fa-play"></i> 开始优化';
                 startBtn.disabled = false;
                 stopBtn.disabled = true;
@@ -1349,14 +1370,11 @@
 
         // 停止优化
         stopBtn.addEventListener('click', async () => {
-            if (isOptimizing) {
-                // 发送停止请求
-                try {
-                    await axios.post('/stop-optimization');
-                    showNotification('优化已停止', 'warning');
-                } catch (error) {
-                    showNotification('停止优化失败: ' + error.message, 'error');
-                }
+            try {
+                await axios.post('/stop-optimization');
+                showNotification('优化停止请求已发送', 'warning');
+            } catch (error) {
+                showNotification('停止优化失败: ' + error.message, 'error');
             }
         });
 
