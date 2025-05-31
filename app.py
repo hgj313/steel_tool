@@ -502,13 +502,15 @@ def optimize():
         if not design_steels:
             return jsonify({'error': '没有设计钢材数据'}), 400
         
-        def run_optimization():
-            global optimization_status, current_optimizer
-            
-            try:
-                optimizer = SteelOptimizer(design_steels, module_steels, params)
-                current_optimizer = optimizer
-                result = optimizer.optimize()
+def run_optimization():
+    global optimization_status, current_optimizer
+    
+    try:
+        # 添加应用上下文
+        with app.app_context():
+            optimizer = SteelOptimizer(design_steels, module_steels, params)
+            current_optimizer = optimizer
+            result = optimizer.optimize()
                 
                 calc_time = time.time() - start_time
                 
