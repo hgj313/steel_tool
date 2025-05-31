@@ -904,11 +904,14 @@
         let isOptimizing = false;
         let optimizationInterval = null;
         let lossChart = null;
+        
+        // 关键修改：添加API基础路径
+        const API_BASE = window.location.origin;
 
         // 检查后端连接
         async function checkBackendConnection() {
             try {
-                const response = await axios.get('/ping', { timeout: 2000 });
+                const response = await axios.get(`${API_BASE}/ping`, { timeout: 2000 });
                 if (response.data && response.data.status === 'running') {
                     connectionStatus.className = 'connection-status connected';
                     connectionStatus.innerHTML = '<i class="fas fa-plug"></i> 后端已连接';
@@ -994,7 +997,7 @@
 
         // 加载设计钢材数据
         async function loadDesignSteels() {
-            const result = await safeRequest(() => axios.get('/design_steels'));
+            const result = await safeRequest(() => axios.get(`${API_BASE}/design_steels`));
             
             if (result.error) {
                 showNotification('加载设计钢材失败: ' + result.error, 'error');
@@ -1040,7 +1043,7 @@
 
         // 加载模数钢材数据
         async function loadModuleSteels() {
-            const result = await safeRequest(() => axios.get('/module_steels'));
+            const result = await safeRequest(() => axios.get(`${API_BASE}/module_steels`));
             
             if (result.error) {
                 showNotification('加载模数钢材失败: ' + result.error, 'error');
@@ -1086,7 +1089,7 @@
         // 删除钢材
         async function deleteSteel(id, type) {
             const result = await safeRequest(() => 
-                axios.delete(`/${type}_steels?id=${id}`)
+                axios.delete(`${API_BASE}/${type}_steels?id=${id}`)
             );
             
             if (result && result.message) {
@@ -1175,7 +1178,7 @@
             
             try {
                 const result = await safeRequest(() => 
-                    axios.post(`/${currentSteelType}_steels`, {
+                    axios.post(`${API_BASE}/${currentSteelType}_steels`, {
                         length: length,
                         quantity: quantity
                     })
@@ -1225,7 +1228,7 @@
             
             try {
                 const result = await safeRequest(() => 
-                    axios.post('/optimize', params)
+                    axios.post(`${API_BASE}/optimize`, params)
                 );
                 
                 if (result.error) {
@@ -1291,7 +1294,7 @@
         // 导出Excel
         exportExcelBtn.addEventListener('click', () => {
             if (currentOptimizationId) {
-                window.open(`/export/excel/${currentOptimizationId}`, '_blank');
+                window.open(`${API_BASE}/export/excel/${currentOptimizationId}`, '_blank');
             } else {
                 showNotification('没有可导出的结果', 'warning');
             }
@@ -1300,7 +1303,7 @@
         // 导出PDF
         exportPDFBtn.addEventListener('click', () => {
             if (currentOptimizationId) {
-                window.open(`/export/pdf/${currentOptimizationId}`, '_blank');
+                window.open(`${API_BASE}/export/pdf/${currentOptimizationId}`, '_blank');
             } else {
                 showNotification('没有可导出的结果', 'warning');
             }
@@ -1325,7 +1328,7 @@
             
             try {
                 const result = await safeRequest(() => 
-                    axios.post('/upload', formData, {
+                    axios.post(`${API_BASE}/upload`, formData, {
                         headers: {'Content-Type': 'multipart/form-data'}
                     })
                 );
