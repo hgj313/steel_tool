@@ -15,6 +15,7 @@ class SteelOptimizer:
         self.generation = 0
         self.no_improvement_count = 0
         self.stop_reason = "优化完成"
+        self.stop_requested = False  # 添加停止请求标志
         
         # 对模数钢材按长度排序，便于后续处理
         self.module_steels_sorted = sorted(module_steels, key=lambda x: x['length'], reverse=True)
@@ -216,8 +217,6 @@ class SteelOptimizer:
 
     def optimize(self):
         """执行优化算法 - 改进遗传算法"""
-        global stop_optimization
-        
         # 记录优化参数
         logging.info(f"开始优化，参数: {self.params}")
         logging.info(f"设计钢材数量: {len(self.design_steels)}")
@@ -235,7 +234,8 @@ class SteelOptimizer:
         start_time = time.time()
         
         while time.time() - start_time < max_time and self.no_improvement_count < max_generations_without_improvement:
-            if stop_optimization:
+            # 检查是否收到停止请求
+            if self.stop_requested:
                 self.stop_reason = "用户手动停止"
                 logging.info("优化被用户停止")
                 break
