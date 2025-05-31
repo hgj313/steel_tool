@@ -20,9 +20,9 @@ from collections import defaultdict
 from flask_socketio import SocketIO, emit
 from optimizer import SteelOptimizer  # 添加导入SteelOptimizer
 
-# 配置日志
+# 修改日志配置
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # 改为 DEBUG 级别获取更多信息
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("app.log"),
