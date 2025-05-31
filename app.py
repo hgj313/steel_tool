@@ -101,8 +101,15 @@ def init_db():
                      loss_rate REAL,
                      cost_saving REAL,
                      calc_time REAL,
-                     stop_reason TEXT
+                     stop_reason TEXT  -- 确保包含 stop_reason 列
                      )''')
+        
+        # 检查 optimization_results 表是否有 stop_reason 列
+        c.execute("PRAGMA table_info(optimization_results)")
+        columns = [col[1] for col in c.fetchall()]
+        if 'stop_reason' not in columns:
+            logging.info("添加缺失的列 'stop_reason' 到 optimization_results 表")
+            c.execute('ALTER TABLE optimization_results ADD COLUMN stop_reason TEXT')
         
         # 创建组合详情表
         c.execute('''CREATE TABLE IF NOT EXISTS combination_details (
