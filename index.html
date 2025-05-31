@@ -189,6 +189,15 @@
         .btn-warning:hover {
             background: #e67e22;
         }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
 
         .btn-outline {
             background: transparent;
@@ -644,9 +653,14 @@
                     <h1><i class="fas fa-industry"></i> 钢材优化系统</h1>
                     <div class="subtitle">最大化材料利用率，最小化损耗成本</div>
                 </div>
-                <button class="theme-switch" id="themeToggle">
-                    <i class="fas fa-moon"></i> 深色模式
-                </button>
+                <div>
+                    <button class="theme-switch" id="themeToggle">
+                        <i class="fas fa-moon"></i> 深色模式
+                    </button>
+                    <button class="btn btn-danger" id="resetSystem" style="margin-left: 10px;">
+                        <i class="fas fa-trash-alt"></i> 重置系统
+                    </button>
+                </div>
             </div>
         </header>
 
@@ -657,6 +671,9 @@
                     <div class="card-actions">
                         <button class="btn btn-outline" id="importExcel">
                             <i class="fas fa-file-import"></i> 导入Excel
+                        </button>
+                        <button class="btn btn-danger" id="deleteAllDesign">
+                            <i class="fas fa-trash"></i> 删除全部
                         </button>
                         <button class="btn btn-primary" id="addDesignSteel">
                             <i class="fas fa-plus"></i> 添加钢材
@@ -914,6 +931,8 @@
         const combinationCountElem = document.getElementById('combinationCount');
         const costSavingElem = document.getElementById('costSaving');
         const stopReasonElem = document.getElementById('stopReason');
+        const resetSystemBtn = document.getElementById('resetSystem');
+        const deleteAllDesignBtn = document.getElementById('deleteAllDesign');
         
         // 状态变量
         let currentSteelType = '';
@@ -1560,6 +1579,34 @@
             // 每30秒检查一次连接
             setInterval(checkBackendConnection, 30000);
         }
+        
+        // 重置系统功能
+        resetSystemBtn.addEventListener('click', async () => {
+            if (confirm('确定要重置系统吗？这将清空所有数据！')) {
+                try {
+                    const response = await axios.post('/reset-system');
+                    showNotification(response.data.message);
+                    // 重新加载数据
+                    await loadDesignSteels();
+                    await loadModuleSteels();
+                } catch (error) {
+                    showNotification('重置失败: ' + error.message, 'error');
+                }
+            }
+        });
+        
+        // 批量删除设计钢材
+        deleteAllDesignBtn.addEventListener('click', async () => {
+            if (confirm('确定要删除所有设计钢材吗？')) {
+                try {
+                    const response = await axios.delete('/design_steels/all');
+                    showNotification(response.data.message);
+                    await loadDesignSteels();
+                } catch (error) {
+                    showNotification('删除失败: ' + error.message, 'error');
+                }
+            }
+        });
 
         // 启动初始化
         document.addEventListener('DOMContentLoaded', initPage);
