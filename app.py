@@ -34,13 +34,20 @@ def init_db():
         conn = sqlite3.connect('data/database.db')
         c = conn.cursor()
         
-        # 创建设计钢材表
+        # 创建设计钢材表 - 添加列存在性检查
         c.execute('''CREATE TABLE IF NOT EXISTS design_steels (
                      id INTEGER PRIMARY KEY AUTOINCREMENT,
                      original_id TEXT NOT NULL,
                      length REAL NOT NULL,
                      quantity INTEGER NOT NULL
                      )''')
+        
+        # 检查表结构并添加缺失的列
+        c.execute("PRAGMA table_info(design_steels)")
+        columns = [col[1] for col in c.fetchall()]
+        if 'original_id' not in columns:
+            logging.info("添加缺失的列 'original_id' 到 design_steels 表")
+            c.execute('ALTER TABLE design_steels ADD COLUMN original_id TEXT NOT NULL DEFAULT "A0"')
         
         # 创建模数钢材表
         c.execute('''CREATE TABLE IF NOT EXISTS module_steels (
@@ -375,7 +382,7 @@ class SteelOptimizer:
         
         # 创建随机分组
         while remaining_steels:
-            group_size = min(random.randint(1, 5), len(remaining_steels)
+            group_size = min(random.randint(1, 5), len(remaining_steels))
             group_steels = remaining_steels[:group_size]
             remaining_steels = remaining_steels[group_size:]
             
