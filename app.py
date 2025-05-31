@@ -8,7 +8,8 @@ from fpdf import FPDF
 import io
 import traceback
 import logging
-import random  # 添加缺失的random导入
+import random
+import chardet  # 添加chardet库用于编码检测
 
 # 配置日志
 logging.basicConfig(
@@ -21,12 +22,12 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # 修改CORS配置
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # 确保数据目录存在
 os.makedirs('data/uploads', exist_ok=True)
 os.makedirs('data/results', exist_ok=True)
-os.makedirs('data', exist_ok=True)  # 确保数据库目录存在
+os.makedirs('data', exist_ok=True)
 
 # 数据库初始化
 def init_db():
@@ -35,7 +36,7 @@ def init_db():
         conn = sqlite3.connect('data/database.db')
         c = conn.cursor()
         
-        # 创建设计钢材表 - 添加列存在性检查
+        # 创建设计钢材表
         c.execute('''CREATE TABLE IF NOT EXISTS design_steels (
                      id INTEGER PRIMARY KEY AUTOINCREMENT,
                      original_id TEXT NOT NULL,
@@ -79,7 +80,7 @@ def init_db():
                      FOREIGN KEY(result_id) REFERENCES optimization_results(id)
                      )''')
         
-        # 添加初始测试数据 - 只在表为空时添加
+        # 添加初始测试数据
         c.execute("SELECT COUNT(*) FROM design_steels")
         if c.fetchone()[0] == 0:
             logging.info("添加初始设计钢材数据")
@@ -109,17 +110,14 @@ def init_db():
 # 添加前端路由
 @app.route('/')
 def index():
-    """提供前端HTML页面"""
     return send_file('index.html')
 
 @app.route('/<path:path>')
 def static_file(path):
-    """提供静态文件"""
     return send_from_directory('.', path)
 
 @app.route('/ping')
 def ping():
-    """健康检查端点"""
     return jsonify({
         "status": "running", 
         "message": "Backend is working!",
@@ -142,30 +140,60 @@ def upload_file():
         file.save(filename)
         logging.info(f"文件已保存: {filename}")
         
+        # 检测文件编码
+        with open(filename, 'rb') as f:
+            raw_data = f.read(4096)
+            detected_encoding = chardet.detect(raw_data)['encoding']
+            logging.info(f"检测到文件编码: {detected_encoding}")
+        
         # 处理Excel/CSV文件
         if filename.endswith(('.xlsx', '.xls')):
             df = pd.read_excel(filename)
         else:  # CSV
-            df = pd.read_csv(filename)
+            try:
+                # 尝试使用检测到的编码
+                df = pd.read_csv(filename, encoding=detected_encoding)
+            except UnicodeDecodeError:
+                # 尝试常见中文编码
+                try:
+                    df = pd.read_csv(filename, encoding='gbk')
+                except:
+                    try:
+                        df = pd.read_csv(filename, encoding='gb2312')
+                    except Exception as e:
+                        logging.error(f"无法解码文件: {str(e)}")
+                        return jsonify({
+                            'error': '文件编码不支持，请使用UTF-8或GBK编码的CSV文件',
+                            'suggested_encodings': ['UTF-8', 'GBK', 'GB2312']
+                        }), 400
         
         # 更灵活的列名检查
         length_col = None
         quantity_col = None
         
         # 可能的列名变体
-        length_aliases = ['长度', 'length', '尺寸', '长', '设计长度']
-        quantity_aliases = ['数量', 'quantity', '个数', '根数', '数量(根)']
+        length_aliases = ['长度', 'length', '尺寸', '长', '设计长度', '酗僅(mm)']
+        quantity_aliases = ['数量', 'quantity', '个数', '根数', '数量(根)', '杅講(跦)']
         
         for col in df.columns:
-            if col in length_aliases:
-                length_col = col
-            if col in quantity_aliases:
-                quantity_col = col
+            col_lower = col.lower()
+            for alias in length_aliases:
+                if alias.lower() in col_lower:
+                    length_col = col
+                    break
+            for alias in quantity_aliases:
+                if alias.lower() in col_lower:
+                    quantity_col = col
+                    break
         
         if not length_col or not quantity_col:
             return jsonify({
                 'error': '文件格式错误，需要包含"长度"和"数量"列',
-                'columns_found': list(df.columns)
+                'columns_found': list(df.columns),
+                'suggestions': {
+                    'length_aliases': length_aliases,
+                    'quantity_aliases': quantity_aliases
+                }
             }), 400
         
         # 保存到数据库
@@ -201,7 +229,8 @@ def upload_file():
         return jsonify({
             'message': '文件上传成功', 
             'count': added_count,
-            'total_rows': len(df)
+            'total_rows': len(df),
+            'encoding_used': detected_encoding
         })
     
     except Exception as e:
@@ -373,6 +402,14 @@ class SteelOptimizer:
         self.best_solution = None
         self.best_loss = float('inf')
         self.start_time = time.time()
+        
+        # 创建ID到长度的映射
+        self.design_length_map = {}
+        for steel in design_steels:
+            for i in range(steel['quantity']):
+                steel_id = f"{steel['original_id']}_{i+1}"
+                self.design_length_map[steel_id] = steel['length']
+        
         logging.info(f"优化器初始化: 设计钢材 {len(self.design_steels)}条, 模数钢材 {len(module_steels)}种")
 
     def _expand_design_steels(self, design_steels):
@@ -381,7 +418,8 @@ class SteelOptimizer:
         for steel in design_steels:
             for i in range(steel['quantity']):
                 expanded.append({
-                    'id': steel['original_id'],
+                    'id': f"{steel['original_id']}_{i+1}",  # 唯一ID
+                    'original_id': steel['original_id'],
                     'length': steel['length']
                 })
         return expanded
@@ -569,16 +607,22 @@ class SteelOptimizer:
         return result
 
     def _calculate_cost_saving(self, solution):
-        """计算节省成本（简化实现）"""
+        """计算节省成本（考虑材料密度和单价）"""
         total_design_length = sum(group['design_length'] for group in solution)
         total_module_length = sum(
             sum(m['length'] * m['count'] for m in group['module_steels']) 
             for group in solution
         )
         
-        # 假设每毫米成本
-        cost_per_mm = 0.05
-        return abs(total_module_length - total_design_length) * cost_per_mm
+        # 获取材料密度和单价
+        density = self.params.get('density', 7850)  # kg/m³, 默认钢材密度
+        price_per_kg = self.params.get('price_per_kg', 5.0)  # 元/公斤, 默认价格
+        
+        # 计算重量差（转换为公斤）
+        weight_difference_kg = (total_module_length - total_design_length) * density / 1000000
+        
+        # 计算成本节省
+        return abs(weight_difference_kg) * price_per_kg
 
     def _crossover(self, parent1, parent2):
         """交叉操作"""
@@ -618,25 +662,21 @@ class SteelOptimizer:
                 group2['design_length'] = self._calculate_group_length(group2['design_steels'])
                 
                 group1['module_steels'] = self._assign_modules([
-                    {'id': sid, 'length': float(sid[1:])} for sid in group1['design_steels']  # 假设ID格式为"A1000"
+                    {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
+                    for sid in group1['design_steels']
                 ])
                 group2['module_steels'] = self._assign_modules([
-                    {'id': sid, 'length': float(sid[1:])} for sid in group2['design_steels']
+                    {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
+                    for sid in group2['design_steels']
                 ])
         
         return solution
 
     def _calculate_group_length(self, design_steels):
         """计算设计钢材组的总长度"""
-        # 简化实现 - 假设ID中包含长度信息
         total = 0
         for steel_id in design_steels:
-            try:
-                # 假设ID格式为 "A2000" 其中2000是长度
-                length = float(steel_id[1:])
-                total += length
-            except (IndexError, ValueError):
-                pass
+            total += self.design_length_map.get(steel_id, 0)
         return total
 
 @app.route('/optimize', methods=['POST'])
@@ -653,7 +693,9 @@ def optimize():
             'cut_loss': float(data.get('cut_loss', 3)),
             'weld_loss': float(data.get('weld_loss', 2)),
             'max_time': int(data.get('max_time', 300)),
-            'target_loss': float(data.get('target_loss', 10))
+            'target_loss': float(data.get('target_loss', 10)),
+            'density': float(data.get('density', 7850)),
+            'price_per_kg': float(data.get('price_per_kg', 5.0))
         }
         
         # 从数据库获取设计钢材
@@ -719,193 +761,4 @@ def optimize():
         conn.commit()
         conn.close()
         
-        return jsonify({**result, 'result_id': result_id})
-    
-    except Exception as e:
-        logging.error(f"优化错误: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({'error': f"优化过程中出错: {str(e)}"}), 500
-
-@app.route('/export/excel/<result_id>')
-def export_excel(result_id):
-    """导出Excel结果"""
-    conn = None
-    try:
-        # 验证result_id
-        try:
-            result_id = int(result_id)
-        except ValueError:
-            return jsonify({'error': '结果ID必须是整数'}), 400
-            
-        # 从数据库获取结果
-        conn = sqlite3.connect('data/database.db')
-        c = conn.cursor()
-        
-        # 获取结果摘要
-        c.execute('SELECT * FROM optimization_results WHERE id = ?', (result_id,))
-        result = c.fetchone()
-        if not result:
-            return jsonify({'error': '结果不存在'}), 404
-        
-        # 获取组合详情
-        c.execute('SELECT * FROM combination_details WHERE result_id = ?', (result_id,))
-        details = c.fetchall()
-        conn.close()
-        
-        # 创建DataFrame
-        columns = ['组合ID', '设计钢材', '设计总长(mm)', '模数钢材', '模数总长(mm)', '差值(mm)', '损耗率(%)']
-        data = []
-        
-        for detail in details:
-            # 格式化设计钢材显示
-            design_steels = detail[3].replace(',', ', ') if detail[3] else ""
-            # 格式化模数钢材显示
-            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
-            
-            data.append([
-                detail[2],  # group_id
-                design_steels,  
-                detail[4],  # design_length
-                module_steels, 
-                detail[6],  # module_length
-                detail[7],  # difference
-                f"{detail[8]:.2f}%"  # loss_rate
-            ])
-        
-        df = pd.DataFrame(data, columns=columns)
-        
-        # 创建Excel文件
-        output = io.BytesIO()
-        
-        # 使用openpyxl引擎
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='优化结果', index=False)
-            
-            # 添加摘要信息
-            workbook = writer.book
-            worksheet = workbook.create_sheet('摘要')
-            
-            summary_data = [
-                ['最低损耗率', f"{result[2]:.2f}%"],
-                ['节省成本', f"¥{result[3]:.2f}"],
-                ['计算时间', f"{result[4]:.1f}秒"]
-            ]
-            
-            for row, (label, value) in enumerate(summary_data, 1):
-                worksheet.cell(row=row, column=1, value=label)
-                worksheet.cell(row=row, column=2, value=value)
-        
-        output.seek(0)
-        
-        # 返回Excel文件
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f'钢材优化结果_{result_id}.xlsx'
-        )
-    
-    except Exception as e:
-        logging.error(f"导出Excel错误: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({'error': f"导出Excel时出错: {str(e)}"}), 500
-    finally:
-        if conn:
-            conn.close()
-
-@app.route('/export/pdf/<result_id>')
-def export_pdf(result_id):
-    """导出PDF结果"""
-    conn = None
-    try:
-        # 验证result_id
-        try:
-            result_id = int(result_id)
-        except ValueError:
-            return jsonify({'error': '结果ID必须是整数'}), 400
-            
-        # 从数据库获取结果
-        conn = sqlite3.connect('data/database.db')
-        c = conn.cursor()
-        
-        # 获取结果摘要
-        c.execute('SELECT * FROM optimization_results WHERE id = ?', (result_id,))
-        result = c.fetchone()
-        if not result:
-            return jsonify({'error': '结果不存在'}), 404
-        
-        # 获取组合详情
-        c.execute('SELECT * FROM combination_details WHERE result_id = ?', (result_id,))
-        details = c.fetchall()
-        conn.close()
-        
-        # 创建PDF
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, "钢材优化结果报告", 0, 1, 'C')
-        pdf.ln(10)
-        
-        # 添加摘要
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "优化结果摘要", 0, 1)
-        pdf.set_font("Arial", '', 12)
-        
-        summary = [
-            f"最低损耗率: {result[2]:.2f}%",
-            f"节省成本: ¥{result[3]:.2f}",
-            f"计算时间: {result[4]:.1f}秒"
-        ]
-        
-        for item in summary:
-            pdf.cell(0, 10, item, 0, 1)
-        
-        pdf.ln(10)
-        
-        # 添加组合详情
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "组合详情", 0, 1)
-        pdf.set_font("Arial", '', 10)
-        
-        # 表头
-        headers = ['组合ID', '设计钢材', '设计总长', '模数钢材', '模数总长', '差值', '损耗率']
-        col_widths = [20, 40, 25, 40, 25, 20, 20]
-        
-        for i, header in enumerate(headers):
-            pdf.cell(col_widths[i], 10, header, 1, 0, 'C')
-        pdf.ln()
-        
-        # 表格内容
-        for detail in details:
-            # 格式化设计钢材显示
-            design_steels = detail[3].replace(',', ', ') if detail[3] else ""
-            # 格式化模数钢材显示
-            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
-            
-            pdf.cell(col_widths[0], 10, detail[2], 1)  # group_id
-            pdf.cell(col_widths[1], 10, design_steels[:35], 1)  # design_steels
-            pdf.cell(col_widths[2], 10, str(detail[4]), 1, 0, 'R')  # design_length
-            pdf.cell(col_widths[3], 10, module_steels[:35], 1)  # module_steels
-            pdf.cell(col_widths[4], 10, str(detail[6]), 1, 0, 'R')  # module_length
-            pdf.cell(col_widths[5], 10, str(detail[7]), 1, 0, 'R')  # difference
-            pdf.cell(col_widths[6], 10, f"{detail[8]:.2f}%", 1, 0, 'R')  # loss_rate
-            pdf.ln()
-        
-        # 保存到内存
-        pdf_output = pdf.output(dest='S').encode('latin1')
-        
-        return send_file(
-            io.BytesIO(pdf_output),
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f'钢材优化报告_{result_id}.pdf'
-        )
-    
-    except Exception as e:
-        logging.error(f"导出PDF错误: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({'error': f"导出PDF时出错: {str(e)}"}), 500
-    finally:
-        if conn:
-            conn.close()
-
-if __name__ == '__main__':
-    init_db()
-    app.run(host='127.0.0.1', port=5000, debug=True)
+        return jsonify
