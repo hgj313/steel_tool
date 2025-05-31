@@ -20,7 +20,7 @@ from collections import defaultdict
 from flask_socketio import SocketIO, emit
 from optimizer import SteelOptimizer  # 添加导入SteelOptimizer
 
-# 修改日志配置
+# ======== 修改日志配置为DEBUG级别 ========
 logging.basicConfig(
     level=logging.DEBUG,  # 改为 DEBUG 级别获取更多信息
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -29,6 +29,7 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+# ======== 日志配置结束 ========
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -49,8 +50,10 @@ optimization_status = {
     'generation': 0
 }
 
-# 停止优化标志
-stop_optimization = False
+# 当前优化器实例
+current_optimizer = None
+
+# 优化线程
 optimization_thread = None
 
 # SocketIO 事件处理
@@ -493,7 +496,7 @@ def delete_all_design_steels():
 @app.route('/optimize', methods=['POST'])
 def optimize():
     """启动优化计算"""
-    global optimization_status, optimization_thread, stop_optimization
+    global optimization_status, optimization_thread, current_optimizer
     
     # 重置优化状态
     optimization_status = {
@@ -504,8 +507,6 @@ def optimize():
         'calc_time': 0,
         'generation': 0
     }
-    
-    stop_optimization = False
     
     socketio.emit('progress_update', optimization_status)
     
@@ -548,11 +549,12 @@ def optimize():
         
         # 在线程中运行优化
         def run_optimization():
-            global optimization_status, stop_optimization
+            global optimization_status, current_optimizer
             
             try:
                 # 创建优化器并运行
                 optimizer = SteelOptimizer(design_steels, module_steels, params)
+                current_optimizer = optimizer  # 保存当前优化器实例
                 result = optimizer.optimize()
                 
                 # 计算最终结果
@@ -616,6 +618,8 @@ def optimize():
                 optimization_status['running'] = False
                 socketio.emit('progress_update', optimization_status)
                 socketio.emit('optimization_error', {'error': str(e)})
+            finally:
+                current_optimizer = None  # 清理当前优化器实例
         
         # 启动优化线程
         start_time = time.time()
@@ -633,9 +637,11 @@ def optimize():
 @app.route('/stop-optimization', methods=['POST'])
 def stop_optimization_request():
     """停止优化计算"""
-    global stop_optimization
-    stop_optimization = True
-    return jsonify({'message': '优化停止请求已接收'})
+    global current_optimizer
+    if current_optimizer:
+        current_optimizer.stop_requested = True
+        return jsonify({'message': '优化停止请求已接收'})
+    return jsonify({'message': '没有正在运行的优化任务'})
 
 @app.route('/export/excel/<result_id>')
 def export_excel(result_id):
