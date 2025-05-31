@@ -1208,7 +1208,7 @@
                     closeModal();
                     showNotification(`${currentSteelType === 'design' ? '设计' : '模数'}钢材添加成功`);
                     
-                    # 刷新数据
+                    // 刷新数据
                     if (currentSteelType === 'design') {
                         await loadDesignSteels();
                     } else {
@@ -1218,7 +1218,7 @@
             } catch (error) {
                 showNotification('添加失败: ' + error.message, 'error');
             } finally {
-                # 恢复按钮状态
+                // 恢复按钮状态
                 confirmAddSteelBtn.innerHTML = originalText;
                 confirmAddSteelBtn.disabled = false;
             }
@@ -1268,10 +1268,10 @@
             // 收集参数
             const params = {
                 tolerance: parseFloat(document.getElementById('tolerance').value) || 5,
-                cutLoss: parseFloat(document.getElementById('cutLoss').value) || 3,
-                weldLoss: parseFloat(document.getElementById('weldLoss').value) || 2,
-                maxTime: parseInt(document.getElementById('maxTime').value) || 300,
-                targetLoss: parseFloat(document.getElementById('targetLoss').value) || 10,
+                cut_loss: parseFloat(document.getElementById('cutLoss').value) || 3,
+                weld_loss: parseFloat(document.getElementById('weldLoss').value) || 2,
+                max_time: parseInt(document.getElementById('maxTime').value) || 300,
+                target_loss: parseFloat(document.getElementById('targetLoss').value) || 10,
                 density: parseFloat(document.getElementById('density').value) || 7850,
                 price_per_kg: parseFloat(document.getElementById('price_per_kg').value) || 5.0
             };
