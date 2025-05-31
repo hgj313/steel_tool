@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
         :root {
             --primary: #3498db;
@@ -744,6 +745,11 @@
                     <label for="density">材料密度 (kg/m³)</label>
                     <input type="number" id="density" value="7850">
                 </div>
+                
+                <div class="input-group">
+                    <label for="price_per_kg">钢材单价 (元/公斤)</label>
+                    <input type="number" id="price_per_kg" value="5.0" step="0.1">
+                </div>
             </div>
         </div>
 
@@ -761,6 +767,7 @@
                 <div>当前损耗率: <span id="currentLoss">0.0</span>%</div>
                 <div>最佳损耗率: <span id="bestLoss">0.0</span>%</div>
                 <div>计算时间: <span id="calcTime">0</span>秒</div>
+                <div>迭代次数: <span id="generationCount">0</span></div>
             </div>
             
             <div class="control-group" style="display: flex; flex-wrap: wrap; gap: 10px;">
@@ -782,7 +789,7 @@
         <div class="results-section">
             <div class="card-header">
                 <h2 class="card-title"><i class="fas fa-chart-line"></i> 优化结果</h2>
-                <div class="summary-text">最低损耗率: <span id="finalLossRate">0.0</span>%</div>
+                <div class="summary-text">最低损耗率: <span id="finalLossRate">0.0</span>% | 停止原因: <span id="stopReason">-</span></div>
             </div>
             
             <div class="summary-cards">
@@ -897,6 +904,16 @@
         const errorOverlay = document.getElementById('errorOverlay');
         const retryBtn = document.getElementById('retryConnection');
         const viewLogsBtn = document.getElementById('viewLogs');
+        const currentLossElem = document.getElementById('currentLoss');
+        const bestLossElem = document.getElementById('bestLoss');
+        const calcTimeElem = document.getElementById('calcTime');
+        const generationCountElem = document.getElementById('generationCount');
+        const finalLossRateElem = document.getElementById('finalLossRate');
+        const utilizationRateElem = document.getElementById('utilizationRate');
+        const materialUsageElem = document.getElementById('materialUsage');
+        const combinationCountElem = document.getElementById('combinationCount');
+        const costSavingElem = document.getElementById('costSaving');
+        const stopReasonElem = document.getElementById('stopReason');
         
         // 状态变量
         let currentSteelType = '';
@@ -904,6 +921,7 @@
         let isOptimizing = false;
         let optimizationInterval = null;
         let lossChart = null;
+        let socket = null;
         
         // 关键修改：添加API基础路径
         const API_BASE = window.location.origin;
@@ -1069,7 +1087,7 @@
                     <td>${steel.id}</td>
                     <td>${steel.length}</td>
                     <td>
-                        <button class="delete-btn" data-id="${steel.id}" data-type="module">
+                        <button class="delete-btn" data-id="${steel.original_id}" data-type="module">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
@@ -1190,7 +1208,7 @@
                     closeModal();
                     showNotification(`${currentSteelType === 'design' ? '设计' : '模数'}钢材添加成功`);
                     
-                    // 刷新数据
+                    # 刷新数据
                     if (currentSteelType === 'design') {
                         await loadDesignSteels();
                     } else {
@@ -1200,15 +1218,52 @@
             } catch (error) {
                 showNotification('添加失败: ' + error.message, 'error');
             } finally {
-                // 恢复按钮状态
+                # 恢复按钮状态
                 confirmAddSteelBtn.innerHTML = originalText;
                 confirmAddSteelBtn.disabled = false;
             }
         });
 
+        // 初始化Socket连接
+        function initSocket() {
+            socket = io();
+            
+            socket.on('connect', () => {
+                console.log('WebSocket连接已建立');
+            });
+            
+            socket.on('progress_update', (data) => {
+                updateProgressBar(data);
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('WebSocket连接已断开');
+            });
+        }
+        
+        // 更新进度条
+        function updateProgressBar(data) {
+            progressBar.style.width = `${data.progress}%`;
+            currentLossElem.textContent = data.current_loss.toFixed(2);
+            bestLossElem.textContent = data.best_loss.toFixed(2);
+            calcTimeElem.textContent = data.calc_time.toFixed(1);
+            generationCountElem.textContent = data.generation || 0;
+            
+            if (data.running) {
+                if (data.progress < 100) {
+                    statusText.textContent = `优化中... ${data.progress}%`;
+                } else {
+                    statusText.textContent = "优化完成";
+                }
+            } else {
+                statusText.textContent = data.stop_reason || "准备就绪";
+            }
+        }
+
         // 开始优化
         startBtn.addEventListener('click', async () => {
             if (isOptimizing) return;
+            isOptimizing = true;
             
             // 收集参数
             const params = {
@@ -1216,33 +1271,45 @@
                 cutLoss: parseFloat(document.getElementById('cutLoss').value) || 3,
                 weldLoss: parseFloat(document.getElementById('weldLoss').value) || 2,
                 maxTime: parseInt(document.getElementById('maxTime').value) || 300,
-                targetLoss: parseFloat(document.getElementById('targetLoss').value) || 10
+                targetLoss: parseFloat(document.getElementById('targetLoss').value) || 10,
+                density: parseFloat(document.getElementById('density').value) || 7850,
+                price_per_kg: parseFloat(document.getElementById('price_per_kg').value) || 5.0
             };
             
             // 显示加载状态
             startBtn.innerHTML = '<div class="loading-spinner"></div> 优化中...';
             startBtn.disabled = true;
             stopBtn.disabled = false;
-            statusText.textContent = "优化中...";
-            isOptimizing = true;
             
             try {
-                const result = await safeRequest(() => 
-                    axios.post(`${API_BASE}/optimize`, params)
-                );
+                const response = await axios.post('/optimize', params);
+                const result = response.data;
                 
                 if (result.error) {
                     showNotification('优化失败: ' + result.error, 'error');
                     statusText.textContent = "优化失败";
                 } else {
-                    // 保存结果ID用于导出
                     currentOptimizationId = result.result_id;
                     
                     // 更新UI
-                    document.getElementById('finalLossRate').textContent = result.loss_rate.toFixed(2);
-                    document.getElementById('costSaving').textContent = `¥${result.cost_saving.toFixed(2)}`;
-                    document.getElementById('utilizationRate').textContent = `${(100 - result.loss_rate).toFixed(2)}%`;
-                    document.getElementById('combinationCount').textContent = result.combinations.length;
+                    finalLossRateElem.textContent = result.loss_rate.toFixed(2);
+                    costSavingElem.textContent = `¥${result.cost_saving.toFixed(2)}`;
+                    stopReasonElem.textContent = result.stop_reason;
+                    
+                    // 计算材料利用率 (100% - 损耗率)
+                    const utilizationRate = 100 - result.loss_rate;
+                    utilizationRateElem.textContent = `${utilizationRate.toFixed(2)}%`;
+                    
+                    combinationCountElem.textContent = result.combinations.length;
+                    
+                    // 计算模数钢材总用量
+                    let materialUsage = 0;
+                    for (const group of result.combinations) {
+                        materialUsage += group.module_length;
+                    }
+                    // 转换为吨 (假设单位是毫米，密度7850 kg/m³)
+                    const materialUsageTons = (materialUsage * 7850 / 1000000) / 1000;
+                    materialUsageElem.textContent = `${materialUsageTons.toFixed(3)}吨`;
                     
                     // 显示组合详情
                     resultsBody.innerHTML = '';
@@ -1267,8 +1334,7 @@
                     exportExcelBtn.disabled = false;
                     exportPDFBtn.disabled = false;
                     
-                    showNotification(`优化完成！最低损耗率: ${result.loss_rate.toFixed(2)}%`);
-                    statusText.textContent = "优化完成";
+                    showNotification(`优化完成！${result.stop_reason}, 最低损耗率: ${result.loss_rate.toFixed(2)}%`);
                 }
             } catch (error) {
                 showNotification('优化失败: ' + error.message, 'error');
@@ -1282,12 +1348,15 @@
         });
 
         // 停止优化
-        stopBtn.addEventListener('click', () => {
+        stopBtn.addEventListener('click', async () => {
             if (isOptimizing) {
-                isOptimizing = false;
-                statusText.textContent = "已停止";
-                startBtn.disabled = false;
-                stopBtn.disabled = true;
+                // 发送停止请求
+                try {
+                    await axios.post('/stop-optimization');
+                    showNotification('优化已停止', 'warning');
+                } catch (error) {
+                    showNotification('停止优化失败: ' + error.message, 'error');
+                }
             }
         });
 
@@ -1459,6 +1528,9 @@
         async function initPage() {
             // 首次检查连接
             await checkBackendConnection();
+            
+            // 初始化Socket
+            initSocket();
             
             // 如果连接正常，加载数据
             if (errorOverlay.style.display === 'none') {
