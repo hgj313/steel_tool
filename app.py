@@ -16,9 +16,10 @@ def init_db():
     conn = sqlite3.connect('data/database.db')
     c = conn.cursor()
     
-    # 创建设计钢材表
+    # 创建设计钢材表 - 增加original_id字段
     c.execute('''CREATE TABLE IF NOT EXISTS design_steels (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 original_id TEXT,
                  length REAL NOT NULL,
                  quantity INTEGER NOT NULL
                  )''')
@@ -80,18 +81,23 @@ def upload_file():
         else:  # CSV
             df = pd.read_csv(filename)
         
-        # 验证数据格式
-        if '长度(mm)' not in df.columns or '数量' not in df.columns:
-            return jsonify({'error': '文件格式错误，需要包含"长度(mm)"和"数量"列'}), 400
+        # 更灵活的列名检查
+        length_col = next((col for col in df.columns if '长度' in col), None)
+        quantity_col = next((col for col in df.columns if '数量' in col), None)
+        
+        if not length_col or not quantity_col:
+            return jsonify({'error': '文件格式错误，需要包含"长度"和"数量"列'}), 400
         
         # 保存到数据库
         conn = sqlite3.connect('data/database.db')
         c = conn.cursor()
-        c.execute('DELETE FROM design_steels')  # 清除旧数据
+        c.execute('DELETE FROM design_steels')
         
-        for _, row in df.iterrows():
-            c.execute('INSERT INTO design_steels (length, quantity) VALUES (?, ?)',
-                      (row['长度(mm)'], row['数量']))
+        for idx, row in df.iterrows():
+            # 生成原始ID (A1, A2等)
+            original_id = f"A{idx+1}"
+            c.execute('INSERT INTO design_steels (original_id, length, quantity) VALUES (?, ?, ?)',
+                      (original_id, row[length_col], row[quantity_col]))
         
         conn.commit()
         conn.close()
@@ -100,6 +106,75 @@ def upload_file():
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# 设计钢材管理API
+@app.route('/design_steels', methods=['GET', 'POST', 'DELETE'])
+def manage_design_steels():
+    conn = sqlite3.connect('data/database.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute('SELECT id, original_id, length, quantity FROM design_steels')
+        steels = [{'id': row[0], 'original_id': row[1], 'length': row[2], 'quantity': row[3]} 
+                 for row in c.fetchall()]
+        return jsonify(steels)
+    
+    elif request.method == 'POST':
+        data = request.json
+        # 生成唯一ID
+        original_id = f"A{int(time.time()*1000)}"
+        c.execute('INSERT INTO design_steels (original_id, length, quantity) VALUES (?, ?, ?)',
+                 (original_id, data['length'], data['quantity']))
+        conn.commit()
+        new_id = c.lastrowid
+        c.execute('SELECT id, original_id, length, quantity FROM design_steels WHERE id = ?', (new_id,))
+        new_steel = c.fetchone()
+        return jsonify({
+            'id': new_steel[0],
+            'original_id': new_steel[1],
+            'length': new_steel[2],
+            'quantity': new_steel[3]
+        }), 201
+    
+    elif request.method == 'DELETE':
+        steel_id = request.args.get('id')
+        if steel_id:
+            c.execute('DELETE FROM design_steels WHERE id = ?', (steel_id,))
+            conn.commit()
+            return jsonify({'message': '设计钢材删除成功'}), 200
+        return jsonify({'error': '缺少钢材ID'}), 400
+
+# 模数钢材管理API
+@app.route('/module_steels', methods=['GET', 'POST', 'DELETE'])
+def manage_module_steels():
+    conn = sqlite3.connect('data/database.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute('SELECT id, length FROM module_steels')
+        steels = [{'id': row[0], 'length': row[1]} for row in c.fetchall()]
+        return jsonify(steels)
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('INSERT INTO module_steels (length) VALUES (?)',
+                 (data['length'],))
+        conn.commit()
+        new_id = c.lastrowid
+        c.execute('SELECT id, length FROM module_steels WHERE id = ?', (new_id,))
+        new_steel = c.fetchone()
+        return jsonify({
+            'id': new_steel[0],
+            'length': new_steel[1]
+        }), 201
+    
+    elif request.method == 'DELETE':
+        steel_id = request.args.get('id')
+        if steel_id:
+            c.execute('DELETE FROM module_steels WHERE id = ?', (steel_id,))
+            conn.commit()
+            return jsonify({'message': '模数钢材删除成功'}), 200
+        return jsonify({'error': '缺少钢材ID'}), 400
 
 @app.route('/optimize', methods=['POST'])
 def optimize():
@@ -118,8 +193,9 @@ def optimize():
         # 从数据库获取设计钢材
         conn = sqlite3.connect('data/database.db')
         c = conn.cursor()
-        c.execute('SELECT id, length, quantity FROM design_steels')
-        design_steels = [{'id': row[0], 'length': row[1], 'quantity': row[2]} for row in c.fetchall()]
+        c.execute('SELECT id, original_id, length, quantity FROM design_steels')
+        design_steels = [{'id': row[0], 'original_id': row[1], 'length': row[2], 'quantity': row[3]} 
+                        for row in c.fetchall()]
         
         # 获取模数钢材
         c.execute('SELECT id, length FROM module_steels')
@@ -159,7 +235,7 @@ def optimize():
         conn.commit()
         conn.close()
         
-        return jsonify(result)
+        return jsonify({**result, 'result_id': result_id})
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -187,11 +263,16 @@ def export_excel(result_id):
         data = []
         
         for detail in details:
+            # 格式化设计钢材显示
+            design_steels = detail[3].replace('a', 'A') if detail[3] else ""
+            # 格式化模数钢材显示
+            module_steels = detail[5].replace(':', 'x') if detail[5] else ""
+            
             data.append([
                 detail[2],  # group_id
-                detail[3],  # design_steels
+                design_steels,  
                 detail[4],  # design_length
-                detail[5],  # module_steels
+                module_steels, 
                 detail[6],  # module_length
                 detail[7],  # difference
                 f"{detail[8]:.2f}%"  # loss_rate
@@ -287,10 +368,15 @@ def export_pdf(result_id):
         
         # 表格内容
         for detail in details:
+            # 格式化设计钢材显示
+            design_steels = detail[3].replace('a', 'A') if detail[3] else ""
+            # 格式化模数钢材显示
+            module_steels = detail[5].replace(':', 'x') if detail[5] else ""
+            
             pdf.cell(col_widths[0], 10, detail[2], 1)  # group_id
-            pdf.cell(col_widths[1], 10, detail[3][:30], 1)  # design_steels
+            pdf.cell(col_widths[1], 10, design_steels[:30], 1)  # design_steels
             pdf.cell(col_widths[2], 10, str(detail[4]), 1, 0, 'R')  # design_length
-            pdf.cell(col_widths[3], 10, detail[5][:30], 1)  # module_steels
+            pdf.cell(col_widths[3], 10, module_steels[:30], 1)  # module_steels
             pdf.cell(col_widths[4], 10, str(detail[6]), 1, 0, 'R')  # module_length
             pdf.cell(col_widths[5], 10, str(detail[7]), 1, 0, 'R')  # difference
             pdf.cell(col_widths[6], 10, f"{detail[8]:.2f}%", 1, 0, 'R')  # loss_rate
