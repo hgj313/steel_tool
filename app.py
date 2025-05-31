@@ -18,6 +18,7 @@ import math
 import json
 from collections import defaultdict
 from flask_socketio import SocketIO, emit
+from optimizer import SteelOptimizer  # 添加导入SteelOptimizer
 
 # 配置日志
 logging.basicConfig(
@@ -373,11 +374,12 @@ def manage_module_steels():
         c = conn.cursor()
         
         if request.method == 'GET':
-            c.execute('SELECT id, length FROM module_steels')
+            # 按长度升序排序并重新编号
+            c.execute('SELECT id, length FROM module_steels ORDER BY length ASC')
             steels = []
-            for row in c.fetchall():
+            for idx, row in enumerate(c.fetchall()):
                 steels.append({
-                    'id': f"B{row[0]}",  # 添加字母前缀
+                    'id': f"B{idx+1}",  # 重新编号从B1开始
                     'original_id': row[0],
                     'length': row[1]
                 })
@@ -439,6 +441,51 @@ def manage_module_steels():
     except Exception as e:
         logging.error(f"模数钢材管理错误: {str(e)}\n{traceback.format_exc()}")
         return jsonify({'error': f"服务器错误: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# 添加重置系统功能
+@app.route('/reset-system', methods=['POST'])
+def reset_system():
+    """重置系统，清空所有数据"""
+    conn = None
+    try:
+        conn = sqlite3.connect('data/database.db')
+        c = conn.cursor()
+        
+        # 清空所有表
+        c.execute('DELETE FROM design_steels')
+        c.execute('DELETE FROM module_steels')
+        c.execute('DELETE FROM optimization_results')
+        c.execute('DELETE FROM combination_details')
+        
+        # 重新初始化数据库
+        init_db()
+        
+        conn.commit()
+        return jsonify({'message': '系统已重置，所有数据已清空'}), 200
+    except Exception as e:
+        logging.error(f"重置系统错误: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': f"重置系统失败: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# 添加设计钢材批量删除功能
+@app.route('/design_steels/all', methods=['DELETE'])
+def delete_all_design_steels():
+    """删除所有设计钢材"""
+    conn = None
+    try:
+        conn = sqlite3.connect('data/database.db')
+        c = conn.cursor()
+        c.execute('DELETE FROM design_steels')
+        conn.commit()
+        return jsonify({'message': '所有设计钢材已删除'}), 200
+    except Exception as e:
+        logging.error(f"批量删除设计钢材错误: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': f"删除失败: {str(e)}"}), 500
     finally:
         if conn:
             conn.close()
