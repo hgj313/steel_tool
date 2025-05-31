@@ -761,4 +761,193 @@ def optimize():
         conn.commit()
         conn.close()
         
-        return jsonify
+        return jsonify({**result, 'result_id': result_id})
+    
+    except Exception as e:
+        logging.error(f"优化错误: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': f"优化过程中出错: {str(e)}"}), 500
+
+@app.route('/export/excel/<result_id>')
+def export_excel(result_id):
+    """导出Excel结果"""
+    conn = None
+    try:
+        # 验证result_id
+        try:
+            result_id = int(result_id)
+        except ValueError:
+            return jsonify({'error': '结果ID必须是整数'}), 400
+            
+        # 从数据库获取结果
+        conn = sqlite3.connect('data/database.db')
+        c = conn.cursor()
+        
+        # 获取结果摘要
+        c.execute('SELECT * FROM optimization_results WHERE id = ?', (result_id,))
+        result = c.fetchone()
+        if not result:
+            return jsonify({'error': '结果不存在'}), 404
+        
+        # 获取组合详情
+        c.execute('SELECT * FROM combination_details WHERE result_id = ?', (result_id,))
+        details = c.fetchall()
+        conn.close()
+        
+        # 创建DataFrame
+        columns = ['组合ID', '设计钢材', '设计总长(mm)', '模数钢材', '模数总长(mm)', '差值(mm)', '损耗率(%)']
+        data = []
+        
+        for detail in details:
+            # 格式化设计钢材显示
+            design_steels = detail[3].replace(',', ', ') if detail[3] else ""
+            # 格式化模数钢材显示
+            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
+            
+            data.append([
+                detail[2],  # group_id
+                design_steels,  
+                detail[4],  # design_length
+                module_steels, 
+                detail[6],  # module_length
+                detail[7],  # difference
+                f"{detail[8]:.2f}%"  # loss_rate
+            ])
+        
+        df = pd.DataFrame(data, columns=columns)
+        
+        # 创建Excel文件
+        output = io.BytesIO()
+        
+        # 使用openpyxl引擎
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='优化结果', index=False)
+            
+            # 添加摘要信息
+            workbook = writer.book
+            worksheet = workbook.create_sheet('摘要')
+            
+            summary_data = [
+                ['最低损耗率', f"{result[2]:.2f}%"],
+                ['节省成本', f"¥{result[3]:.2f}"],
+                ['计算时间', f"{result[4]:.1f}秒"]
+            ]
+            
+            for row, (label, value) in enumerate(summary_data, 1):
+                worksheet.cell(row=row, column=1, value=label)
+                worksheet.cell(row=row, column=2, value=value)
+        
+        output.seek(0)
+        
+        # 返回Excel文件
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f'钢材优化结果_{result_id}.xlsx'
+        )
+    
+    except Exception as e:
+        logging.error(f"导出Excel错误: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': f"导出Excel时出错: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/export/pdf/<result_id>')
+def export_pdf(result_id):
+    """导出PDF结果"""
+    conn = None
+    try:
+        # 验证result_id
+        try:
+            result_id = int(result_id)
+        except ValueError:
+            return jsonify({'error': '结果ID必须是整数'}), 400
+            
+        # 从数据库获取结果
+        conn = sqlite3.connect('data/database.db')
+        c = conn.cursor()
+        
+        # 获取结果摘要
+        c.execute('SELECT * FROM optimization_results WHERE id = ?', (result_id,))
+        result = c.fetchone()
+        if not result:
+            return jsonify({'error': '结果不存在'}), 404
+        
+        # 获取组合详情
+        c.execute('SELECT * FROM combination_details WHERE result_id = ?', (result_id,))
+        details = c.fetchall()
+        conn.close()
+        
+        # 创建PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(0, 10, "钢材优化结果报告", 0, 1, 'C')
+        pdf.ln(10)
+        
+        # 添加摘要
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "优化结果摘要", 0, 1)
+        pdf.set_font("Arial", '', 12)
+        
+        summary = [
+            f"最低损耗率: {result[2]:.2f}%",
+            f"节省成本: ¥{result[3]:.2f}",
+            f"计算时间: {result[4]:.1f}秒"
+        ]
+        
+        for item in summary:
+            pdf.cell(0, 10, item, 0, 1)
+        
+        pdf.ln(10)
+        
+        # 添加组合详情
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "组合详情", 0, 1)
+        pdf.set_font("Arial", '', 10)
+        
+        # 表头
+        headers = ['组合ID', '设计钢材', '设计总长', '模数钢材', '模数总长', '差值', '损耗率']
+        col_widths = [20, 40, 25, 40, 25, 20, 20]
+        
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 10, header, 1, 0, 'C')
+        pdf.ln()
+        
+        # 表格内容
+        for detail in details:
+            # 格式化设计钢材显示
+            design_steels = detail[3].replace(',', ', ') if detail[3] else ""
+            # 格式化模数钢材显示
+            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
+            
+            pdf.cell(col_widths[0], 10, detail[2], 1)  # group_id
+            pdf.cell(col_widths[1], 10, design_steels[:35], 1)  # design_steels
+            pdf.cell(col_widths[2], 10, str(detail[4]), 1, 0, 'R')  # design_length
+            pdf.cell(col_widths[3], 10, module_steels[:35], 1)  # module_steels
+            pdf.cell(col_widths[4], 10, str(detail[6]), 1, 0, 'R')  # module_length
+            pdf.cell(col_widths[5], 10, str(detail[7]), 1, 0, 'R')  # difference
+            pdf.cell(col_widths[6], 10, f"{detail[8]:.2f}%", 1, 0, 'R')  # loss_rate
+            pdf.ln()
+        
+        # 保存到内存
+        pdf_output = pdf.output(dest='S').encode('latin1')
+        
+        return send_file(
+            io.BytesIO(pdf_output),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'钢材优化报告_{result_id}.pdf'
+        )
+    
+    except Exception as e:
+        logging.error(f"导出PDF错误: {str(e)}\n{traceback.format_exc()}")
+        return jsonify({'error': f"导出PDF时出错: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+if __name__ == '__main__':
+    init_db()
+    app.run(host='127.0.0.1', port=5000, debug=True)
