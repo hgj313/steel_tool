@@ -13,14 +13,22 @@ class SteelOptimizer:
         self.best_solution = None
         self.best_loss = float('inf')
         self.start_time = time.time()
+        self.generation = 0
         self.no_improvement_count = 0
-        logging.info(f"优化器初始化: 设计钢材 {len(self.design_steels)}条, 模数钢材 {len(module_steels)}种")
+        self.stop_reason = "优化完成"
         
         # 对模数钢材按长度排序，便于后续处理
         self.module_steels_sorted = sorted(module_steels, key=lambda x: x['length'], reverse=True)
         
         # 创建模数钢材ID到长度的映射
         self.module_length_map = {m['id']: m['length'] for m in module_steels}
+        
+        # 创建设计钢材ID到长度的映射
+        self.design_length_map = {}
+        for steel in design_steels:
+            for i in range(steel['quantity']):
+                steel_id = f"{steel['original_id']}_{i+1}"
+                self.design_length_map[steel_id] = steel['length']
 
     def _expand_design_steels(self, design_steels):
         """将设计钢材展开为单体列表"""
@@ -28,13 +36,14 @@ class SteelOptimizer:
         for steel in design_steels:
             for i in range(steel['quantity']):
                 expanded.append({
-                    'id': steel['original_id'],
+                    'id': f"{steel['original_id']}_{i+1}",  # 唯一ID
+                    'original_id': steel['original_id'],
                     'length': steel['length']
                 })
         return expanded
 
     def _generate_random_solution(self):
-        """生成随机初始解决方案 - 改进分组策略"""
+        """生成随机初始解决方案"""
         solution = []
         remaining_steels = self.design_steels.copy()
         random.shuffle(remaining_steels)
@@ -62,10 +71,38 @@ class SteelOptimizer:
         
         return solution
 
-    @lru_cache(maxsize=1000)
+    def _greedy_combination(self, required_length):
+        """贪心算法处理大尺寸钢材"""
+        sorted_modules = sorted(self.module_steels, key=lambda x: x['length'], reverse=True)
+        combination = []
+        remaining = required_length
+        
+        for module in sorted_modules:
+            if module['length'] <= remaining:
+                count = remaining // module['length']
+                if count > 0:
+                    combination.append({
+                        'id': module['id'],
+                        'length': module['length'],
+                        'count': count
+                    })
+                    remaining -= count * module['length']
+        
+        if remaining > 0:
+            # 添加最小的能覆盖剩余长度的钢材
+            closest = min(self.module_steels, key=lambda m: abs(m['length'] - remaining))
+            combination.append({'id': closest['id'], 'length': closest['length'], 'count': 1})
+        
+        return combination
+
     def _find_best_combination(self, required_length):
         """使用动态规划找到最接近的组合 - 改进算法"""
         tolerance = self.params['tolerance']
+        
+        # 如果所需长度超过20000mm，使用贪心算法
+        if required_length > 20000:
+            return self._greedy_combination(required_length)
+            
         min_length = max(0, required_length - tolerance)
         max_length = required_length + tolerance
         
@@ -140,9 +177,10 @@ class SteelOptimizer:
 
     def optimize(self):
         """执行优化算法 - 改进遗传算法"""
+        global stop_optimization
+        
         population_size = 30
         population = [self._generate_random_solution() for _ in range(population_size)]
-        generation = 0
         max_generations_without_improvement = 15
         
         max_time = self.params.get('max_time', 300)
@@ -153,7 +191,12 @@ class SteelOptimizer:
         start_time = time.time()
         
         while time.time() - start_time < max_time and self.no_improvement_count < max_generations_without_improvement:
-            generation += 1
+            if stop_optimization:
+                self.stop_reason = "用户手动停止"
+                logging.info("优化被用户停止")
+                break
+                
+            self.generation += 1
             
             # 评估种群
             evaluated = []
@@ -170,11 +213,12 @@ class SteelOptimizer:
                 self.best_solution = current_best_solution
                 self.best_loss = current_best_loss
                 self.no_improvement_count = 0
-                logging.info(f"第{generation}代: 发现更好方案 {current_best_loss:.2f}%")
+                logging.info(f"第{self.generation}代: 发现更好方案 {current_best_loss:.2f}%")
                 
                 # 检查是否达到期望损耗率
                 if current_best_loss <= target_loss:
-                    logging.info(f"达到目标损耗率 {target_loss}%，停止优化")
+                    self.stop_reason = f"达到目标损耗率 {target_loss}%"
+                    logging.info(self.stop_reason)
                     break
             else:
                 self.no_improvement_count += 1
@@ -201,13 +245,20 @@ class SteelOptimizer:
         # 计算最终结果
         calc_time = time.time() - start_time
         
-        logging.info(f"优化完成: 耗时 {calc_time:.2f}秒, 最佳损耗率 {self.best_loss:.2f}%")
+        if self.stop_reason == "优化完成":
+            if self.no_improvement_count >= max_generations_without_improvement:
+                self.stop_reason = f"连续{max_generations_without_improvement}代无改进"
+            else:
+                self.stop_reason = f"达到最大计算时间 {max_time}秒"
+        
+        logging.info(f"优化完成: {self.stop_reason}, 耗时 {calc_time:.2f}秒, 最佳损耗率 {self.best_loss:.2f}%")
         
         result = {
             'loss_rate': self.best_loss,
             'cost_saving': self._calculate_cost_saving(self.best_solution),
             'calc_time': calc_time,
-            'combinations': []
+            'combinations': [],
+            'stop_reason': self.stop_reason
         }
         
         # 格式化组合详情
@@ -272,7 +323,7 @@ class SteelOptimizer:
             # 创建包含丢失钢材的新组
             for steel_id in missing_steels:
                 # 找到钢材长度
-                steel_length = next(s['length'] for s in self.design_steels if s['id'] == steel_id)
+                steel_length = self.design_length_map.get(steel_id, 0)
                 new_group = {
                     'design_steels': [steel_id],
                     'design_length': steel_length,
@@ -309,16 +360,16 @@ class SteelOptimizer:
                     group2['design_steels'][steel_idx2] = steel1
                     
                     # 重新计算组属性
-                    group1['design_length'] = self._calculate_group_length(group1['design_steels'])
-                    group2['design_length'] = self._calculate_group_length(group2['design_steels'])
+                    group1['design_length'] = sum(self.design_length_map[sid] for sid in group1['design_steels'])
+                    group2['design_length'] = sum(self.design_length_map[sid] for sid in group2['design_steels'])
                     
                     # 重新分配模数钢材
                     group1['module_steels'] = self._assign_modules([
-                        {'id': sid, 'length': self._get_length_from_id(sid)} 
+                        {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
                         for sid in group1['design_steels']
                     ])
                     group2['module_steels'] = self._assign_modules([
-                        {'id': sid, 'length': self._get_length_from_id(sid)} 
+                        {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
                         for sid in group2['design_steels']
                     ])
             
@@ -336,17 +387,17 @@ class SteelOptimizer:
                     # 创建新组
                     new_group1 = {
                         'design_steels': group1_steels,
-                        'design_length': self._calculate_group_length(group1_steels),
+                        'design_length': sum(self.design_length_map[sid] for sid in group1_steels),
                         'module_steels': self._assign_modules([
-                            {'id': sid, 'length': self._get_length_from_id(sid)} 
+                            {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
                             for sid in group1_steels
                         ])
                     }
                     new_group2 = {
                         'design_steels': group2_steels,
-                        'design_length': self._calculate_group_length(group2_steels),
+                        'design_length': sum(self.design_length_map[sid] for sid in group2_steels),
                         'module_steels': self._assign_modules([
-                            {'id': sid, 'length': self._get_length_from_id(sid)} 
+                            {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
                             for sid in group2_steels
                         ])
                     }
@@ -367,7 +418,7 @@ class SteelOptimizer:
                     'design_steels': merged_steels,
                     'design_length': group1['design_length'] + group2['design_length'],
                     'module_steels': self._assign_modules([
-                        {'id': sid, 'length': self._get_length_from_id(sid)} 
+                        {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
                         for sid in merged_steels
                     ])
                 }
@@ -377,25 +428,3 @@ class SteelOptimizer:
                 del solution[idx + 1]
         
         return solution
-
-    def _get_length_from_id(self, steel_id):
-        """从钢材ID获取长度 - 假设ID格式为'A2000'"""
-        try:
-            # 尝试从ID中解析长度
-            return float(steel_id[1:])
-        except:
-            # 如果解析失败，使用默认长度（实际项目中应避免）
-            return 2000
-
-    def _calculate_group_length(self, design_steels):
-        """计算设计钢材组的总长度"""
-        total = 0
-        for steel_id in design_steels:
-            try:
-                # 尝试从ID中解析长度
-                length = float(steel_id[1:])
-                total += length
-            except:
-                # 如果解析失败，使用默认长度（实际项目中应避免）
-                total += 2000
-        return total
