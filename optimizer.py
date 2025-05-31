@@ -95,27 +95,37 @@ class SteelOptimizer:
         
         return combination
 
-    def _find_best_combination(self, required_length):
-        """使用动态规划找到最接近的组合 - 改进算法"""
-        tolerance = self.params['tolerance']
+    # 修改 _find_best_combination 方法
+def _find_best_combination(self, required_length):
+    """使用动态规划找到最接近的组合 - 改进算法"""
+    tolerance = self.params['tolerance']
+    
+    # 将长度转换为整数（毫米）
+    required_length = int(round(required_length))
+    tolerance = int(round(tolerance))
+    
+    # 如果所需长度超过20000mm，使用贪心算法
+    if required_length > 20000:
+        return self._greedy_combination(required_length)
         
-        # 如果所需长度超过20000mm，使用贪心算法
-        if required_length > 20000:
-            return self._greedy_combination(required_length)
-            
-        min_length = max(0, required_length - tolerance)
-        max_length = required_length + tolerance
+    min_length = max(0, required_length - tolerance)
+    max_length = required_length + tolerance
+    
+    # 初始化DP数组
+    dp = [None] * (max_length + 1)
+    dp[0] = []
+    
+    # 对每个模数钢材
+    for module in self.module_steels_sorted:
+        # 转换为整数毫米
+        module_length = int(round(module['length']))
         
-        # 初始化DP数组
-        dp = [None] * (int(max_length) + 1)
-        dp[0] = []
-        
-        # 对每个模数钢材
-        for module in self.module_steels_sorted:
-            module_length = module['length']
-            for current_length in range(module_length, len(dp)):
-                if dp[current_length - module_length] is not None:
-                    new_combination = dp[current_length - module_length] + [module]
+        for current_length in range(module_length, len(dp)):
+            if dp[current_length - module_length] is not None:
+                new_combination = dp[current_length - module_length] + [module]
+                # ... 保持原有逻辑 ...
+    
+    # ... 保持原有逻辑 ...
                     # 如果当前长度还没有组合，或者新组合的钢材数量更少
                     if dp[current_length] is None or len(new_combination) < len(dp[current_length]):
                         dp[current_length] = new_combination
