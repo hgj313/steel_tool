@@ -126,7 +126,7 @@ class SteelOptimizer:
             # 找到最接近的模数钢材
             closest_module = min(
                 self.module_steels, 
-                key=lambda m: abs(m['length'] - design_length)
+                key=lambda m: abs(m['length'] - design_length))
             
             combinations.append({
                 'group_id': f"G{group_id}",
