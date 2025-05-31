@@ -9,7 +9,11 @@ import io
 import traceback
 import logging
 import random
-import chardet  # 添加chardet库用于编码检测
+import chardet
+import threading
+import math
+from collections import defaultdict
+from flask_socketio import SocketIO  # 添加SocketIO支持
 
 # 配置日志
 logging.basicConfig(
@@ -23,11 +27,21 @@ logging.basicConfig(
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+socketio = SocketIO(app, cors_allowed_origins="*")  # 初始化SocketIO
 
 # 确保数据目录存在
 os.makedirs('data/uploads', exist_ok=True)
 os.makedirs('data/results', exist_ok=True)
 os.makedirs('data', exist_ok=True)
+
+# 全局优化状态
+optimization_status = {
+    'running': False,
+    'progress': 0,
+    'current_loss': 0,
+    'best_loss': 0,
+    'calc_time': 0
+}
 
 # 数据库初始化
 def init_db():
@@ -63,7 +77,8 @@ def init_db():
                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                      loss_rate REAL,
                      cost_saving REAL,
-                     calc_time REAL
+                     calc_time REAL,
+                     stop_reason TEXT
                      )''')
         
         # 创建组合详情表
@@ -123,6 +138,11 @@ def ping():
         "message": "Backend is working!",
         "version": "1.0.0"
     })
+
+@app.route('/optimization-status')
+def get_optimization_status():
+    """获取优化进度"""
+    return jsonify(optimization_status)
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -335,7 +355,13 @@ def manage_module_steels():
         
         if request.method == 'GET':
             c.execute('SELECT id, length FROM module_steels')
-            steels = [{'id': row[0], 'length': row[1]} for row in c.fetchall()]
+            steels = []
+            for row in c.fetchall():
+                steels.append({
+                    'id': f"B{row[0]}",  # 添加字母前缀
+                    'original_id': row[0],
+                    'length': row[1]
+                })
             return jsonify(steels)
         
         elif request.method == 'POST':
@@ -364,7 +390,8 @@ def manage_module_steels():
             new_steel = c.fetchone()
             
             return jsonify({
-                'id': new_steel[0],
+                'id': f"B{new_steel[0]}",  # 返回带字母前缀的ID
+                'original_id': new_steel[0],
                 'length': new_steel[1]
             }), 201
         
@@ -374,9 +401,13 @@ def manage_module_steels():
                 return jsonify({'error': '缺少钢材ID参数'}), 400
                 
             try:
-                steel_id = int(steel_id)
+                # 从B1格式中提取数字ID
+                if steel_id.startswith('B'):
+                    steel_id = int(steel_id[1:])
+                else:
+                    steel_id = int(steel_id)
             except ValueError:
-                return jsonify({'error': '钢材ID必须是整数'}), 400
+                return jsonify({'error': '钢材ID格式错误'}), 400
                 
             c.execute('SELECT COUNT(*) FROM module_steels WHERE id = ?', (steel_id,))
             if c.fetchone()[0] == 0:
@@ -395,13 +426,15 @@ def manage_module_steels():
 
 # 优化器类定义
 class SteelOptimizer:
-    def __init__(self, design_steels, module_steels, params):
+    def __init__(self, design_steels, module_steels, params, socketio=None):
         self.design_steels = self._expand_design_steels(design_steels)
         self.module_steels = module_steels
         self.params = params
         self.best_solution = None
         self.best_loss = float('inf')
         self.start_time = time.time()
+        self.socketio = socketio
+        self.stop_reason = "未完成"
         
         # 创建ID到长度的映射
         self.design_length_map = {}
@@ -446,70 +479,86 @@ class SteelOptimizer:
         
         return solution
 
+    def _find_best_combination(self, required_length):
+        """使用动态规划找到最接近的组合"""
+        tolerance = self.params['tolerance']
+        min_length = required_length
+        max_length = required_length + tolerance
+        
+        # 初始化DP数组
+        dp = [float('inf')] * (int(max_length) + 1)
+        dp[0] = 0
+        combinations = [None] * (int(max_length) + 1)
+        
+        # 对每个模数钢材
+        for module in self.module_steels:
+            module_length = module['length']
+            for current_length in range(module_length, len(dp)):
+                if dp[current_length - module_length] + 1 < dp[current_length]:
+                    dp[current_length] = dp[current_length - module_length] + 1
+                    combinations[current_length] = module['id'], current_length - module_length
+        
+        # 找到最接近的组合
+        best_length = None
+        best_count = float('inf')
+        
+        for length in range(min_length, len(dp)):
+            if dp[length] < float('inf') and dp[length] < best_count:
+                best_length = length
+                best_count = dp[length]
+        
+        if best_length is None:
+            # 没有合适组合，使用最接近的单个钢材
+            closest = min(self.module_steels, key=lambda m: abs(m['length'] - required_length))
+            return [{'id': f"B{closest['id']}", 'length': closest['length'], 'count': 1}]
+        
+        # 构建组合
+        result = []
+        current_length = best_length
+        module_counts = defaultdict(int)
+        
+        while current_length > 0:
+            module_id, prev_length = combinations[current_length]
+            module_counts[module_id] += 1
+            current_length = prev_length
+        
+        for module_id, count in module_counts.items():
+            module = next(m for m in self.module_steels if m['id'] == module_id)
+            result.append({
+                'id': f"B{module_id}",
+                'length': module['length'],
+                'count': count
+            })
+        
+        return result
+
     def _assign_modules(self, group_steels):
         """为设计钢材组分配模数钢材"""
         design_length = sum(s['length'] for s in group_steels)
         required_length = design_length + self.params['cut_loss'] * (len(group_steels) - 1)
         
-        # 尝试找到最匹配的模数钢材
-        best_fit = None
+        # 尝试找到最匹配的模数钢材（单个）
+        best_single = None
         best_diff = float('inf')
         
         for module in self.module_steels:
-            diff = abs(module['length'] - required_length)
+            if module['length'] < required_length:
+                continue
+                
+            diff = module['length'] - required_length
             if diff <= self.params['tolerance'] and diff < best_diff:
-                best_fit = [{'id': module['id'], 'length': module['length'], 'count': 1}]
+                best_single = [{
+                    'id': f"B{module['id']}", 
+                    'length': module['length'], 
+                    'count': 1
+                }]
                 best_diff = diff
         
-        # 如果找到匹配的单个模数钢材
-        if best_fit:
-            return best_fit
+        if best_single:
+            return best_single
         
-        # 否则尝试组合模数钢材
-        combinations = self._generate_module_combinations(required_length)
-        if combinations:
-            best_combination = min(combinations, key=lambda c: abs(c['total_length'] - required_length))
-            return best_combination['modules']
-        
-        # 没有合适组合，使用最接近的单个模数钢材
-        closest = min(self.module_steels, key=lambda m: abs(m['length'] - required_length))
-        return [{'id': closest['id'], 'length': closest['length'], 'count': 1}]
-
-    def _generate_module_combinations(self, required_length):
-        """生成可能的模数钢材组合"""
-        combinations = []
-        modules_sorted = sorted(self.module_steels, key=lambda m: m['length'], reverse=True)
-        
-        # 简单贪心算法
-        for i, module in enumerate(modules_sorted):
-            current_length = 0
-            current_modules = []
-            
-            # 尝试使用当前模块作为起点
-            while current_length + module['length'] <= required_length + self.params['tolerance']:
-                current_modules.append({'id': module['id'], 'length': module['length'], 'count': 1})
-                current_length += module['length']
-                
-                # 检查是否满足要求
-                if current_length >= required_length - self.params['tolerance']:
-                    combinations.append({
-                        'modules': current_modules.copy(),
-                        'total_length': current_length
-                    })
-                
-                # 尝试添加其他模块
-                for other_module in modules_sorted[i+1:]:
-                    if current_length + other_module['length'] <= required_length + self.params['tolerance']:
-                        current_modules.append({'id': other_module['id'], 'length': other_module['length'], 'count': 1})
-                        current_length += other_module['length']
-                        
-                        if current_length >= required_length - self.params['tolerance']:
-                            combinations.append({
-                                'modules': current_modules.copy(),
-                                'total_length': current_length
-                            })
-            
-        return combinations
+        # 否则使用动态规划找到最佳组合
+        return self._find_best_combination(required_length)
 
     def _calculate_loss(self, solution):
         """计算解决方案的损耗率"""
@@ -524,10 +573,15 @@ class SteelOptimizer:
         if total_module_length == 0:
             return float('inf')
         
+        # 确保不会出现负损耗率
+        if total_module_length < total_design_length:
+            return float('inf')
+            
         return (total_module_length - total_design_length) / total_module_length * 100
 
     def optimize(self):
         """执行优化算法"""
+        global optimization_status
         population = [self._generate_random_solution() for _ in range(20)]
         generation = 0
         
@@ -537,9 +591,32 @@ class SteelOptimizer:
         logging.info(f"开始优化: 最大时间 {max_time}秒, 目标损耗率 {target_loss}%")
         
         start_time = time.time()
+        last_update_time = start_time
         
         while time.time() - start_time < max_time:
+            # 添加人工延迟，使计算过程可见
+            time.sleep(0.1)
+            
             generation += 1
+            current_time = time.time()
+            
+            # 每0.5秒更新一次进度
+            if current_time - last_update_time > 0.5:
+                elapsed_time = current_time - start_time
+                progress = min(99, int((elapsed_time / max_time) * 100))
+                
+                optimization_status = {
+                    'running': True,
+                    'progress': progress,
+                    'current_loss': self.best_loss,
+                    'best_loss': self.best_loss,
+                    'calc_time': elapsed_time
+                }
+                
+                if self.socketio:
+                    self.socketio.emit('progress_update', optimization_status)
+                
+                last_update_time = current_time
             
             # 评估种群
             evaluated = []
@@ -559,7 +636,8 @@ class SteelOptimizer:
                 
                 # 检查是否达到期望损耗率
                 if current_best_loss <= target_loss:
-                    logging.info(f"达到目标损耗率 {target_loss}%，停止优化")
+                    self.stop_reason = f"达到目标损耗率 {target_loss}%"
+                    logging.info(self.stop_reason)
                     break
             
             # 选择前50%作为精英
@@ -579,19 +657,40 @@ class SteelOptimizer:
         # 计算最终结果
         calc_time = time.time() - start_time
         
-        logging.info(f"优化完成: 耗时 {calc_time:.2f}秒, 最佳损耗率 {self.best_loss:.2f}%")
+        if self.stop_reason == "未完成":
+            self.stop_reason = f"达到最大计算时间 {max_time}秒"
+        
+        logging.info(f"优化完成: {self.stop_reason}, 耗时 {calc_time:.2f}秒, 最佳损耗率 {self.best_loss:.2f}%")
+        
+        # 更新最终状态
+        optimization_status = {
+            'running': False,
+            'progress': 100,
+            'current_loss': self.best_loss,
+            'best_loss': self.best_loss,
+            'calc_time': calc_time
+        }
+        
+        if self.socketio:
+            self.socketio.emit('progress_update', optimization_status)
         
         result = {
             'loss_rate': self.best_loss,
             'cost_saving': self._calculate_cost_saving(self.best_solution),
             'calc_time': calc_time,
-            'combinations': []
+            'combinations': [],
+            'stop_reason': self.stop_reason
         }
         
         # 格式化组合详情
         for i, group in enumerate(self.best_solution):
             module_length = sum(m['length'] * m['count'] for m in group['module_steels'])
             difference = module_length - group['design_length']
+            
+            # 确保差值非负
+            if difference < 0:
+                difference = 0
+            
             loss_rate = difference / module_length * 100 if module_length > 0 else 0
             
             result['combinations'].append({
@@ -682,6 +781,19 @@ class SteelOptimizer:
 @app.route('/optimize', methods=['POST'])
 def optimize():
     """启动优化计算"""
+    global optimization_status
+    
+    # 重置优化状态
+    optimization_status = {
+        'running': True,
+        'progress': 0,
+        'current_loss': 0,
+        'best_loss': 0,
+        'calc_time': 0
+    }
+    
+    socketio.emit('progress_update', optimization_status)
+    
     try:
         # 获取参数
         data = request.get_json()
@@ -720,7 +832,7 @@ def optimize():
             return jsonify({'error': '没有设计钢材数据'}), 400
         
         # 创建优化器并运行
-        optimizer = SteelOptimizer(design_steels, module_steels, params)
+        optimizer = SteelOptimizer(design_steels, module_steels, params, socketio)
         result = optimizer.optimize()
         
         # 保存结果到数据库
@@ -729,9 +841,9 @@ def optimize():
         
         # 保存优化结果摘要
         c.execute('''INSERT INTO optimization_results 
-                     (loss_rate, cost_saving, calc_time) 
-                     VALUES (?, ?, ?)''',
-                  (result['loss_rate'], result['cost_saving'], result['calc_time']))
+                     (loss_rate, cost_saving, calc_time, stop_reason) 
+                     VALUES (?, ?, ?, ?)''',
+                  (result['loss_rate'], result['cost_saving'], result['calc_time'], result['stop_reason']))
         result_id = c.lastrowid
         
         # 保存组合详情
@@ -765,6 +877,8 @@ def optimize():
     
     except Exception as e:
         logging.error(f"优化错误: {str(e)}\n{traceback.format_exc()}")
+        optimization_status['running'] = False
+        socketio.emit('progress_update', optimization_status)
         return jsonify({'error': f"优化过程中出错: {str(e)}"}), 500
 
 @app.route('/export/excel/<result_id>')
@@ -829,7 +943,8 @@ def export_excel(result_id):
             summary_data = [
                 ['最低损耗率', f"{result[2]:.2f}%"],
                 ['节省成本', f"¥{result[3]:.2f}"],
-                ['计算时间', f"{result[4]:.1f}秒"]
+                ['计算时间', f"{result[4]:.1f}秒"],
+                ['停止原因', result[5]]
             ]
             
             for row, (label, value) in enumerate(summary_data, 1):
@@ -894,7 +1009,8 @@ def export_pdf(result_id):
         summary = [
             f"最低损耗率: {result[2]:.2f}%",
             f"节省成本: ¥{result[3]:.2f}",
-            f"计算时间: {result[4]:.1f}秒"
+            f"计算时间: {result[4]:.1f}秒",
+            f"停止原因: {result[5]}"
         ]
         
         for item in summary:
@@ -950,4 +1066,4 @@ def export_pdf(result_id):
 
 if __name__ == '__main__':
     init_db()
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    socketio.run(app, host='127.0.0.1', port=5000, debug=True)
