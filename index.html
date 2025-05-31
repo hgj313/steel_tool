@@ -6,6 +6,7 @@
     <title>钢材优化系统</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
         :root {
             --primary: #3498db;
@@ -445,6 +446,54 @@
         body.dark-mode .summary-card {
             background-color: #2d2e2f;
         }
+        
+        /* 模态框样式 */
+        #steelModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            width: 400px;
+            max-width: 90%;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        
+        .close-modal {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
     </style>
 </head>
 <body>
@@ -490,26 +539,7 @@
                             </tr>
                         </thead>
                         <tbody id="designTableBody">
-                            <tr>
-                                <td>A1-A5</td>
-                                <td>2000</td>
-                                <td>5</td>
-                                <td>
-                                    <button class="delete-btn">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>A6-A10</td>
-                                <td>3000</td>
-                                <td>5</td>
-                                <td>
-                                    <button class="delete-btn">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </td>
-                            </tr>
+                            <!-- 动态加载 -->
                         </tbody>
                     </table>
                 </div>
@@ -533,24 +563,7 @@
                             </tr>
                         </thead>
                         <tbody id="moduleTableBody">
-                            <tr>
-                                <td>B1</td>
-                                <td>6000</td>
-                                <td>
-                                    <button class="delete-btn">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>B2</td>
-                                <td>4000</td>
-                                <td>
-                                    <button class="delete-btn">
-                                        <i class="fas fa-trash"></i>
-                                    </button>
-                                </td>
-                            </tr>
+                            <!-- 动态加载 -->
                         </tbody>
                     </table>
                 </div>
@@ -630,25 +643,25 @@
         <div class="results-section">
             <div class="card-header">
                 <h2 class="card-title"><i class="fas fa-chart-line"></i> 优化结果</h2>
-                <div class="summary-text">最低损耗率: <span id="finalLossRate">8.2</span>%</div>
+                <div class="summary-text">最低损耗率: <span id="finalLossRate">0.0</span>%</div>
             </div>
             
             <div class="summary-cards">
                 <div class="summary-card">
                     <h3>节省成本</h3>
-                    <div class="value success">¥1,850</div>
+                    <div class="value success" id="costSaving">¥0</div>
                 </div>
                 <div class="summary-card">
                     <h3>材料利用率</h3>
-                    <div class="value">91.8%</div>
+                    <div class="value" id="utilizationRate">0%</div>
                 </div>
                 <div class="summary-card">
                     <h3>模数钢材用量</h3>
-                    <div class="value">42.5吨</div>
+                    <div class="value" id="materialUsage">0吨</div>
                 </div>
                 <div class="summary-card">
                     <h3>总组合数</h3>
-                    <div class="value">18</div>
+                    <div class="value" id="combinationCount">0</div>
                 </div>
             </div>
             
@@ -667,24 +680,7 @@
                         </tr>
                     </thead>
                     <tbody id="resultsBody">
-                        <tr>
-                            <td>G1</td>
-                            <td>A1, A2, A3</td>
-                            <td>6500</td>
-                            <td>B1 x 1</td>
-                            <td>6000</td>
-                            <td>500</td>
-                            <td>8.3%</td>
-                        </tr>
-                        <tr>
-                            <td>G2</td>
-                            <td>A4, A5</td>
-                            <td>3500</td>
-                            <td>B2 x 1</td>
-                            <td>4000</td>
-                            <td>500</td>
-                            <td>12.5%</td>
-                        </tr>
+                        <!-- 动态加载 -->
                     </tbody>
                 </table>
             </div>
@@ -703,7 +699,29 @@
         <i class="fas fa-check-circle"></i>
         <div class="notification-content">
             <div class="notification-title">优化完成</div>
-            <div class="notification-message">已找到最佳方案，损耗率8.2%</div>
+            <div class="notification-message">已找到最佳方案</div>
+        </div>
+    </div>
+    
+    <!-- 添加钢材模态框 -->
+    <div id="steelModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">添加钢材</h3>
+                <button class="close-modal">&times;</button>
+            </div>
+            <div class="input-group">
+                <label for="steelLength">长度 (mm)</label>
+                <input type="number" id="steelLength" min="1" step="0.1" placeholder="输入钢材长度">
+            </div>
+            <div class="input-group" id="quantityGroup" style="display: none;">
+                <label for="steelQuantity">数量</label>
+                <input type="number" id="steelQuantity" min="1" value="1">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="cancelAddSteel">取消</button>
+                <button class="btn btn-primary" id="confirmAddSteel">确认</button>
+            </div>
         </div>
     </div>
 
@@ -721,7 +739,257 @@
         const notification = document.getElementById('notification');
         const importExcelBtn = document.getElementById('importExcel');
         const designFile = document.getElementById('designFile');
+        const addDesignSteelBtn = document.getElementById('addDesignSteel');
+        const addModuleSteelBtn = document.getElementById('addModuleSteel');
+        const steelModal = document.getElementById('steelModal');
+        const closeModalBtn = document.querySelector('.close-modal');
+        const cancelAddSteelBtn = document.getElementById('cancelAddSteel');
+        const confirmAddSteelBtn = document.getElementById('confirmAddSteel');
+        const steelLengthInput = document.getElementById('steelLength');
+        const steelQuantityInput = document.getElementById('steelQuantity');
+        const quantityGroup = document.getElementById('quantityGroup');
+        const resultsBody = document.getElementById('resultsBody');
         
+        let currentSteelType = '';
+        let currentOptimizationId = null;
+
+        // 加载设计钢材数据
+        async function loadDesignSteels() {
+            try {
+                const response = await axios.get('/design_steels');
+                designTableBody.innerHTML = '';
+                
+                response.data.forEach(steel => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${steel.original_id}</td>
+                        <td>${steel.length}</td>
+                        <td>${steel.quantity}</td>
+                        <td>
+                            <button class="delete-btn" data-id="${steel.id}" data-type="design">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </td>
+                    `;
+                    designTableBody.appendChild(row);
+                });
+                
+                // 绑定删除事件
+                document.querySelectorAll('.delete-btn[data-type="design"]').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const id = btn.getAttribute('data-id');
+                        await deleteSteel(id, 'design');
+                    });
+                });
+            } catch (error) {
+                console.error('加载设计钢材失败:', error);
+            }
+        }
+
+        // 加载模数钢材数据
+        async function loadModuleSteels() {
+            try {
+                const response = await axios.get('/module_steels');
+                moduleTableBody.innerHTML = '';
+                
+                response.data.forEach(steel => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${steel.id}</td>
+                        <td>${steel.length}</td>
+                        <td>
+                            <button class="delete-btn" data-id="${steel.id}" data-type="module">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </td>
+                    `;
+                    moduleTableBody.appendChild(row);
+                });
+                
+                // 绑定删除事件
+                document.querySelectorAll('.delete-btn[data-type="module"]').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const id = btn.getAttribute('data-id');
+                        await deleteSteel(id, 'module');
+                    });
+                });
+            } catch (error) {
+                console.error('加载模数钢材失败:', error);
+            }
+        }
+
+        // 删除钢材
+        async function deleteSteel(id, type) {
+            try {
+                await axios.delete(`/${type}_steels?id=${id}`);
+                if (type === 'design') {
+                    await loadDesignSteels();
+                } else {
+                    await loadModuleSteels();
+                }
+                showNotification(`${type === 'design' ? '设计' : '模数'}钢材删除成功`);
+            } catch (error) {
+                console.error('删除失败:', error);
+                showNotification('删除失败，请重试', 'warning');
+            }
+        }
+
+        // 添加钢材
+        addDesignSteelBtn.addEventListener('click', () => {
+            currentSteelType = 'design';
+            quantityGroup.style.display = 'block';
+            steelModal.style.display = 'flex';
+        });
+
+        addModuleSteelBtn.addEventListener('click', () => {
+            currentSteelType = 'module';
+            quantityGroup.style.display = 'none';
+            steelModal.style.display = 'flex';
+        });
+
+        // 关闭模态框
+        function closeModal() {
+            steelModal.style.display = 'none';
+            steelLengthInput.value = '';
+            steelQuantityInput.value = '1';
+        }
+
+        closeModalBtn.addEventListener('click', closeModal);
+        cancelAddSteelBtn.addEventListener('click', closeModal);
+
+        // 确认添加钢材
+        confirmAddSteelBtn.addEventListener('click', async () => {
+            const length = parseFloat(steelLengthInput.value);
+            const quantity = currentSteelType === 'design' 
+                ? parseInt(steelQuantityInput.value) 
+                : 1;
+            
+            if (!length || length <= 0 || (currentSteelType === 'design' && (!quantity || quantity <= 0))) {
+                showNotification('请输入有效的长度和数量', 'warning');
+                return;
+            }
+            
+            try {
+                await axios.post(`/${currentSteelType}_steels`, {
+                    length: length,
+                    quantity: quantity
+                });
+                
+                closeModal();
+                
+                if (currentSteelType === 'design') {
+                    await loadDesignSteels();
+                } else {
+                    await loadModuleSteels();
+                }
+                
+                showNotification(`${currentSteelType === 'design' ? '设计' : '模数'}钢材添加成功`);
+            } catch (error) {
+                console.error('添加失败:', error);
+                showNotification('添加失败，请重试', 'warning');
+            }
+        });
+
+        // 开始优化
+        startBtn.addEventListener('click', async () => {
+            try {
+                // 收集参数
+                const params = {
+                    tolerance: parseFloat(document.getElementById('tolerance').value),
+                    cutLoss: parseFloat(document.getElementById('cutLoss').value),
+                    weldLoss: parseFloat(document.getElementById('weldLoss').value),
+                    maxTime: parseInt(document.getElementById('maxTime').value),
+                    targetLoss: parseFloat(document.getElementById('targetLoss').value)
+                };
+                
+                // 调用优化接口
+                const response = await axios.post('/optimize', params);
+                const result = response.data;
+                
+                // 保存结果ID用于导出
+                currentOptimizationId = result.result_id;
+                
+                // 更新UI
+                document.getElementById('finalLossRate').textContent = result.loss_rate.toFixed(2);
+                document.getElementById('costSaving').textContent = `¥${result.cost_saving.toFixed(2)}`;
+                document.getElementById('utilizationRate').textContent = `${(100 - result.loss_rate).toFixed(2)}%`;
+                document.getElementById('combinationCount').textContent = result.combinations.length;
+                
+                // 显示组合详情
+                resultsBody.innerHTML = '';
+                result.combinations.forEach(comb => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${comb.group_id}</td>
+                        <td>${comb.design_steels.join(', ')}</td>
+                        <td>${comb.design_length.toFixed(2)}</td>
+                        <td>${comb.module_steels.map(m => `${m.id}x${m.count}`).join(', ')}</td>
+                        <td>${comb.module_length.toFixed(2)}</td>
+                        <td>${comb.difference.toFixed(2)}</td>
+                        <td>${comb.loss_rate.toFixed(2)}%</td>
+                    `;
+                    resultsBody.appendChild(row);
+                });
+                
+                // 更新图表
+                renderLossChart();
+                
+                // 启用导出按钮
+                exportExcelBtn.disabled = false;
+                exportPDFBtn.disabled = false;
+                
+                showNotification(`优化完成！最低损耗率: ${result.loss_rate.toFixed(2)}%`);
+                
+            } catch (error) {
+                console.error('优化失败:', error);
+                showNotification('优化失败: ' + (error.response?.data?.error || error.message), 'warning');
+            }
+        });
+
+        // 导出Excel
+        exportExcelBtn.addEventListener('click', () => {
+            if (currentOptimizationId) {
+                window.open(`/export/excel/${currentOptimizationId}`, '_blank');
+            } else {
+                showNotification('没有可导出的结果', 'warning');
+            }
+        });
+
+        // 导出PDF
+        exportPDFBtn.addEventListener('click', () => {
+            if (currentOptimizationId) {
+                window.open(`/export/pdf/${currentOptimizationId}`, '_blank');
+            } else {
+                showNotification('没有可导出的结果', 'warning');
+            }
+        });
+
+        // 文件上传
+        importExcelBtn.addEventListener('click', () => {
+            designFile.click();
+        });
+        
+        designFile.addEventListener('change', async function() {
+            if (this.files.length > 0) {
+                const formData = new FormData();
+                formData.append('file', this.files[0]);
+                
+                try {
+                    const response = await axios.post('/upload', formData, {
+                        headers: {'Content-Type': 'multipart/form-data'}
+                    });
+                    
+                    if (response.data.message) {
+                        showNotification(response.data.message);
+                        await loadDesignSteels();
+                    }
+                } catch (error) {
+                    console.error('文件上传失败:', error);
+                    showNotification(error.response?.data?.error || '上传失败', 'warning');
+                }
+            }
+        });
+
         // Toggle theme
         themeToggle.addEventListener('click', () => {
             document.body.classList.toggle('dark-mode');
@@ -733,7 +1001,7 @@
         
         // Show notification
         function showNotification(message, type = 'success') {
-            const title = type === 'success' ? '优化完成' : '注意';
+            const title = type === 'success' ? '操作成功' : '注意';
             notification.querySelector('.notification-title').textContent = title;
             notification.querySelector('.notification-message').textContent = message;
             notification.className = `notification ${type} show`;
@@ -743,65 +1011,22 @@
             }, 5000);
         }
         
-        // Simulate optimization progress
-        function simulateOptimization() {
-            let progress = 0;
-            let currentLoss = 25;
-            let bestLoss = 25;
-            let time = 0;
-            
-            startBtn.disabled = true;
-            stopBtn.disabled = false;
-            statusText.textContent = "优化中...";
-            
-            const interval = setInterval(() => {
-                progress += Math.random() * 5;
-                currentLoss -= Math.random() * 0.8;
-                time += 1;
-                
-                if (progress > 100) progress = 100;
-                if (currentLoss < bestLoss) bestLoss = currentLoss;
-                
-                progressBar.style.width = `${progress}%`;
-                document.getElementById('currentLoss').textContent = currentLoss.toFixed(1);
-                document.getElementById('bestLoss').textContent = bestLoss.toFixed(1);
-                document.getElementById('calcTime').textContent = time;
-                
-                if (progress >= 100) {
-                    clearInterval(interval);
-                    statusText.textContent = "优化完成";
-                    startBtn.disabled = false;
-                    stopBtn.disabled = true;
-                    exportExcelBtn.disabled = false;
-                    exportPDFBtn.disabled = false;
-                    document.getElementById('finalLossRate').textContent = bestLoss.toFixed(1);
-                    showNotification(`已找到最佳方案，损耗率${bestLoss.toFixed(1)}%`);
-                    renderLossChart();
-                }
-            }, 200);
-            
-            stopBtn.addEventListener('click', () => {
-                clearInterval(interval);
-                statusText.textContent = "已停止";
-                startBtn.disabled = false;
-                stopBtn.disabled = true;
-                exportExcelBtn.disabled = false;
-                exportPDFBtn.disabled = false;
-            });
-        }
-        
         // Initialize loss chart
         function renderLossChart() {
             const ctx = document.getElementById('lossChart').getContext('2d');
             
-            // Simulated loss data
+            // 模拟数据
             const lossData = [];
             for (let i = 0; i < 20; i++) {
                 lossData.push(25 - (i * 0.8) + (Math.random() - 0.5) * 2);
             }
-            lossData[19] = 8.2; // Final value
+            lossData[19] = parseFloat(document.getElementById('finalLossRate').textContent) || 8.2;
             
-            new Chart(ctx, {
+            if (window.lossChart) {
+                window.lossChart.destroy();
+            }
+            
+            window.lossChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: Array.from({length: 20}, (_, i) => i + 1),
@@ -857,22 +1082,13 @@
                 }
             });
         }
-        
-        // Event listeners
-        startBtn.addEventListener('click', simulateOptimization);
-        
-        importExcelBtn.addEventListener('click', () => {
-            designFile.click();
+
+        // 初始化页面
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadDesignSteels();
+            await loadModuleSteels();
+            renderLossChart();
         });
-        
-        designFile.addEventListener('change', function() {
-            if (this.files.length > 0) {
-                showNotification('设计钢材数据已导入', 'success');
-            }
-        });
-        
-        // Initialize chart
-        window.onload = renderLossChart;
     </script>
 </body>
 </html>
