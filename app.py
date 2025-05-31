@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import sqlite3
 import os
@@ -8,6 +8,7 @@ from fpdf import FPDF
 import io
 import traceback
 import logging
+import random  # 添加缺失的random导入
 
 # 配置日志
 logging.basicConfig(
@@ -20,7 +21,7 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})  # 修改CORS配置
 
 # 确保数据目录存在
 os.makedirs('data/uploads', exist_ok=True)
@@ -104,6 +105,17 @@ def init_db():
     finally:
         if conn:
             conn.close()
+
+# 添加前端路由
+@app.route('/')
+def index():
+    """提供前端HTML页面"""
+    return send_file('index.html')
+
+@app.route('/<path:path>')
+def static_file(path):
+    """提供静态文件"""
+    return send_from_directory('.', path)
 
 @app.route('/ping')
 def ping():
