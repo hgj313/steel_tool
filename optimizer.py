@@ -1,7 +1,6 @@
 import time
 import random
-import sqlite3
-from datetime import datetime
+from itertools import groupby
 
 class SteelOptimizer:
     def __init__(self, design_steels, module_steels, params):
@@ -15,17 +14,15 @@ class SteelOptimizer:
         self.status = "准备中"
     
     def _expand_design_steels(self, design_steels):
-        """将设计钢材展开为单体列表"""
+        """将设计钢材展开为单体列表 - 使用original_id"""
         expanded = []
-        counter = 1
         for steel in design_steels:
             for i in range(steel['quantity']):
                 expanded.append({
-                    'id': f"a{counter}",
+                    'id': steel['original_id'],  # 使用原始ID
                     'length': steel['length'],
-                    'original_id': steel['id']
+                    'original_id': steel['original_id']
                 })
-                counter += 1
         return expanded
     
     def _generate_random_solution(self):
@@ -196,45 +193,60 @@ class SteelOptimizer:
         
         # 假设每毫米成本（实际应根据参数计算）
         cost_per_mm = 0.05
-        return (total_design_length - total_module_length) * cost_per_mm
+        return (total_module_length - total_design_length) * cost_per_mm
     
     def _crossover(self, parent1, parent2):
-        """交叉操作"""
-        # 简化实现 - 随机选择父代的部分组
-        crossover_point = random.randint(1, min(len(parent1), len(parent2)) - 1)
+        """交叉操作 - 修复实现"""
+        # 更合理的交叉实现
+        if not parent1 or not parent2:
+            return parent1 or parent2
+        
+        min_len = min(len(parent1), len(parent2))
+        if min_len == 0:
+            return parent1.copy()
+        
+        crossover_point = random.randint(1, min_len - 1)
         child = parent1[:crossover_point] + parent2[crossover_point:]
         return child
     
     def _mutate(self, solution):
-        """变异操作"""
-        # 随机修改一个组
+        """变异操作 - 修复实现"""
+        if not solution:
+            return solution
+            
         if random.random() < 0.3:  # 30%变异概率
             idx = random.randint(0, len(solution) - 1)
             group = solution[idx]
             
-            # 随机添加或移除一个设计钢材
-            if random.random() < 0.5 and len(group['design_steels']) > 1:
-                # 移除一个钢材
-                remove_idx = random.randint(0, len(group['design_steels']) - 1)
-                del group['design_steels'][remove_idx]
-            else:
-                # 添加一个钢材（从其他组随机取）
-                other_groups = [g for g in solution if g != group]
-                if other_groups:
-                    donor = random.choice(other_groups)
-                    if donor['design_steels']:
-                        steel_idx = random.randint(0, len(donor['design_steels']) - 1)
-                        steel = donor['design_steels'][steel_idx]
-                        group['design_steels'].append(steel)
-                        del donor['design_steels'][steel_idx]
-            
-            # 重新计算组属性
-            group['design_length'] = self._calculate_group_length(group['design_steels'])
-            group['module_steels'] = self._assign_modules(group['design_steels'])
+            if group.get('design_steels'):
+                if random.random() < 0.5 and len(group['design_steels']) > 1:
+                    # 移除一个钢材
+                    remove_idx = random.randint(0, len(group['design_steels']) - 1)
+                    removed = group['design_steels'].pop(remove_idx)
+                    
+                    # 创建新组存放移除的钢材
+                    new_group = {
+                        'design_steels': [removed],
+                        'design_length': float(removed.split('-')[1]) if '-' in removed else 0,
+                        'module_steels': self._assign_modules([{'id': removed}])
+                    }
+                    solution.append(new_group)
+                else:
+                    # 添加一个钢材（从其他组随机取）
+                    other_groups = [g for g in solution if g != group and g.get('design_steels')]
+                    if other_groups:
+                        donor = random.choice(other_groups)
+                        if donor['design_steels']:
+                            steel_idx = random.randint(0, len(donor['design_steels']) - 1)
+                            steel = donor['design_steels'][steel_idx]
+                            group['design_steels'].append(steel)
+                            donor['design_steels'].pop(steel_idx)
+                            
+                            # 更新两个组的长度和模数分配
+                            group['design_length'] = sum(float(s.split('-')[1]) if '-' in s else 0 for s in group['design_steels'])
+                            donor['design_length'] = sum(float(s.split('-')[1]) if '-' in s else 0 for s in donor['design_steels'])
+                            
+                            group['module_steels'] = self._assign_modules([{'id': s} for s in group['design_steels']])
+                            donor['module_steels'] = self._assign_modules([{'id': s} for s in donor['design_steels']])
         
         return solution
-    
-    def _calculate_group_length(self, design_steels):
-        """计算设计钢材组的总长度"""
-        # 从设计钢材列表中获取长度
-        return sum(float(steel.split('-')[1]) for steel in design_steels)  # 简化实现
