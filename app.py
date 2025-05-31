@@ -15,8 +15,9 @@ import random
 import chardet
 import threading
 import math
+import json
 from collections import defaultdict
-from flask_socketio import SocketIO  # 添加SocketIO支持
+from flask_socketio import SocketIO, emit
 
 # 配置日志
 logging.basicConfig(
@@ -43,8 +44,23 @@ optimization_status = {
     'progress': 0,
     'current_loss': 0,
     'best_loss': 0,
-    'calc_time': 0
+    'calc_time': 0,
+    'generation': 0
 }
+
+# 停止优化标志
+stop_optimization = False
+optimization_thread = None
+
+# SocketIO 事件处理
+@socketio.on('connect')
+def handle_connect():
+    logging.info('客户端已连接')
+    emit('progress_update', optimization_status)
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logging.info('客户端已断开')
 
 # 数据库初始化
 def init_db():
@@ -427,364 +443,10 @@ def manage_module_steels():
         if conn:
             conn.close()
 
-# 优化器类定义
-class SteelOptimizer:
-    def __init__(self, design_steels, module_steels, params, socketio=None):
-        self.design_steels = self._expand_design_steels(design_steels)
-        self.module_steels = module_steels
-        self.params = params
-        self.best_solution = None
-        self.best_loss = float('inf')
-        self.start_time = time.time()
-        self.socketio = socketio
-        self.stop_reason = "未完成"
-        
-        # 创建ID到长度的映射
-        self.design_length_map = {}
-        for steel in design_steels:
-            for i in range(steel['quantity']):
-                steel_id = f"{steel['original_id']}_{i+1}"
-                self.design_length_map[steel_id] = steel['length']
-        
-        logging.info(f"优化器初始化: 设计钢材 {len(self.design_steels)}条, 模数钢材 {len(module_steels)}种")
-
-    def _expand_design_steels(self, design_steels):
-        """将设计钢材展开为单体列表"""
-        expanded = []
-        for steel in design_steels:
-            for i in range(steel['quantity']):
-                expanded.append({
-                    'id': f"{steel['original_id']}_{i+1}",  # 唯一ID
-                    'original_id': steel['original_id'],
-                    'length': steel['length']
-                })
-        return expanded
-
-    def _generate_random_solution(self):
-        """生成随机初始解决方案"""
-        solution = []
-        remaining_steels = self.design_steels.copy()
-        random.shuffle(remaining_steels)
-        
-        # 创建随机分组
-        while remaining_steels:
-            group_size = min(random.randint(1, 5), len(remaining_steels))
-            group_steels = remaining_steels[:group_size]
-            remaining_steels = remaining_steels[group_size:]
-            
-            # 分配模数钢材
-            module_assignment = self._assign_modules(group_steels)
-            solution.append({
-                'design_steels': [s['id'] for s in group_steels],
-                'design_length': sum(s['length'] for s in group_steels),
-                'module_steels': module_assignment
-            })
-        
-        return solution
-
-    def _find_best_combination(self, required_length):
-        """使用动态规划找到最接近的组合"""
-        tolerance = self.params['tolerance']
-        min_length = required_length
-        max_length = required_length + tolerance
-        
-        # 初始化DP数组
-        dp = [float('inf')] * (int(max_length) + 1)
-        dp[0] = 0
-        combinations = [None] * (int(max_length) + 1)
-        
-        # 对每个模数钢材
-        for module in self.module_steels:
-            module_length = module['length']
-            for current_length in range(module_length, len(dp)):
-                if dp[current_length - module_length] + 1 < dp[current_length]:
-                    dp[current_length] = dp[current_length - module_length] + 1
-                    combinations[current_length] = module['id'], current_length - module_length
-        
-        # 找到最接近的组合
-        best_length = None
-        best_count = float('inf')
-        
-        for length in range(min_length, len(dp)):
-            if dp[length] < float('inf') and dp[length] < best_count:
-                best_length = length
-                best_count = dp[length]
-        
-        if best_length is None:
-            # 没有合适组合，使用最接近的单个钢材
-            closest = min(self.module_steels, key=lambda m: abs(m['length'] - required_length))
-            return [{'id': f"B{closest['id']}", 'length': closest['length'], 'count': 1}]
-        
-        # 构建组合
-        result = []
-        current_length = best_length
-        module_counts = defaultdict(int)
-        
-        while current_length > 0:
-            module_id, prev_length = combinations[current_length]
-            module_counts[module_id] += 1
-            current_length = prev_length
-        
-        for module_id, count in module_counts.items():
-            module = next(m for m in self.module_steels if m['id'] == module_id)
-            result.append({
-                'id': f"B{module_id}",
-                'length': module['length'],
-                'count': count
-            })
-        
-        return result
-
-    def _assign_modules(self, group_steels):
-        """为设计钢材组分配模数钢材"""
-        design_length = sum(s['length'] for s in group_steels)
-        required_length = design_length + self.params['cut_loss'] * (len(group_steels) - 1)
-        
-        # 尝试找到最匹配的模数钢材（单个）
-        best_single = None
-        best_diff = float('inf')
-        
-        for module in self.module_steels:
-            if module['length'] < required_length:
-                continue
-                
-            diff = module['length'] - required_length
-            if diff <= self.params['tolerance'] and diff < best_diff:
-                best_single = [{
-                    'id': f"B{module['id']}", 
-                    'length': module['length'], 
-                    'count': 1
-                }]
-                best_diff = diff
-        
-        if best_single:
-            return best_single
-        
-        # 否则使用动态规划找到最佳组合
-        return self._find_best_combination(required_length)
-
-    def _calculate_loss(self, solution):
-        """计算解决方案的损耗率"""
-        total_design_length = 0
-        total_module_length = 0
-        
-        for group in solution:
-            total_design_length += group['design_length']
-            for m in group['module_steels']:
-                total_module_length += m['length'] * m['count']
-        
-        if total_module_length == 0:
-            return float('inf')
-        
-        # 确保不会出现负损耗率
-        if total_module_length < total_design_length:
-            return float('inf')
-            
-        return (total_module_length - total_design_length) / total_module_length * 100
-
-    def optimize(self):
-        """执行优化算法"""
-        global optimization_status
-        population = [self._generate_random_solution() for _ in range(20)]
-        generation = 0
-        
-        max_time = self.params.get('max_time', 300)
-        target_loss = self.params.get('target_loss', 10)
-        
-        logging.info(f"开始优化: 最大时间 {max_time}秒, 目标损耗率 {target_loss}%")
-        
-        start_time = time.time()
-        last_update_time = start_time
-        
-        while time.time() - start_time < max_time:
-            # 添加人工延迟，使计算过程可见
-            time.sleep(0.1)
-            
-            generation += 1
-            current_time = time.time()
-            
-            # 每0.5秒更新一次进度
-            if current_time - last_update_time > 0.5:
-                elapsed_time = current_time - start_time
-                progress = min(99, int((elapsed_time / max_time) * 100))
-                
-                optimization_status = {
-                    'running': True,
-                    'progress': progress,
-                    'current_loss': self.best_loss,
-                    'best_loss': self.best_loss,
-                    'calc_time': elapsed_time
-                }
-                
-                if self.socketio:
-                    self.socketio.emit('progress_update', optimization_status)
-                
-                last_update_time = current_time
-            
-            # 评估种群
-            evaluated = []
-            for solution in population:
-                loss_rate = self._calculate_loss(solution)
-                evaluated.append((solution, loss_rate))
-            
-            # 排序 (损耗率越低越好)
-            evaluated.sort(key=lambda x: x[1])
-            
-            # 更新最佳方案
-            current_best_solution, current_best_loss = evaluated[0]
-            if current_best_loss < self.best_loss:
-                self.best_solution = current_best_solution
-                self.best_loss = current_best_loss
-                logging.info(f"第{generation}代: 发现更好方案 {current_best_loss:.2f}%")
-                
-                # 检查是否达到期望损耗率
-                if current_best_loss <= target_loss:
-                    self.stop_reason = f"达到目标损耗率 {target_loss}%"
-                    logging.info(self.stop_reason)
-                    break
-            
-            # 选择前50%作为精英
-            elite_size = max(2, int(len(population) * 0.5))
-            elite = [sol for sol, _ in evaluated[:elite_size]]
-            
-            # 创建新一代
-            new_population = elite.copy()
-            while len(new_population) < len(population):
-                parent1, parent2 = random.choices(elite, k=2)
-                child = self._crossover(parent1, parent2)
-                child = self._mutate(child)
-                new_population.append(child)
-            
-            population = new_population
-        
-        # 计算最终结果
-        calc_time = time.time() - start_time
-        
-        if self.stop_reason == "未完成":
-            self.stop_reason = f"达到最大计算时间 {max_time}秒"
-        
-        logging.info(f"优化完成: {self.stop_reason}, 耗时 {calc_time:.2f}秒, 最佳损耗率 {self.best_loss:.2f}%")
-        
-        # 更新最终状态
-        optimization_status = {
-            'running': False,
-            'progress': 100,
-            'current_loss': self.best_loss,
-            'best_loss': self.best_loss,
-            'calc_time': calc_time
-        }
-        
-        if self.socketio:
-            self.socketio.emit('progress_update', optimization_status)
-        
-        result = {
-            'loss_rate': self.best_loss,
-            'cost_saving': self._calculate_cost_saving(self.best_solution),
-            'calc_time': calc_time,
-            'combinations': [],
-            'stop_reason': self.stop_reason
-        }
-        
-        # 格式化组合详情
-        for i, group in enumerate(self.best_solution):
-            module_length = sum(m['length'] * m['count'] for m in group['module_steels'])
-            difference = module_length - group['design_length']
-            
-            # 确保差值非负
-            if difference < 0:
-                difference = 0
-            
-            loss_rate = difference / module_length * 100 if module_length > 0 else 0
-            
-            result['combinations'].append({
-                'group_id': f"G{i+1}",
-                'design_steels': group['design_steels'],
-                'design_length': group['design_length'],
-                'module_steels': group['module_steels'],
-                'module_length': module_length,
-                'difference': difference,
-                'loss_rate': loss_rate
-            })
-        
-        return result
-
-    def _calculate_cost_saving(self, solution):
-        """计算节省成本（考虑材料密度和单价）"""
-        total_design_length = sum(group['design_length'] for group in solution)
-        total_module_length = sum(
-            sum(m['length'] * m['count'] for m in group['module_steels']) 
-            for group in solution
-        )
-        
-        # 获取材料密度和单价
-        density = self.params.get('density', 7850)  # kg/m³, 默认钢材密度
-        price_per_kg = self.params.get('price_per_kg', 5.0)  # 元/公斤, 默认价格
-        
-        # 计算重量差（转换为公斤）
-        weight_difference_kg = (total_module_length - total_design_length) * density / 1000000
-        
-        # 计算成本节省
-        return abs(weight_difference_kg) * price_per_kg
-
-    def _crossover(self, parent1, parent2):
-        """交叉操作"""
-        if not parent1 or not parent2:
-            return parent1 or parent2
-        
-        min_len = min(len(parent1), len(parent2))
-        if min_len == 0:
-            return parent1
-        
-        crossover_point = random.randint(1, min_len - 1)
-        child = parent1[:crossover_point] + parent2[crossover_point:]
-        return child
-
-    def _mutate(self, solution):
-        """变异操作"""
-        if random.random() < 0.3 and len(solution) >= 2:
-            # 随机交换两个组中的钢材
-            idx1, idx2 = random.sample(range(len(solution)), 2)
-            group1 = solution[idx1]
-            group2 = solution[idx2]
-            
-            if group1['design_steels'] and group2['design_steels']:
-                # 随机选择钢材交换
-                steel_idx1 = random.randint(0, len(group1['design_steels']) - 1)
-                steel_idx2 = random.randint(0, len(group2['design_steels']) - 1)
-                
-                # 交换钢材
-                steel1 = group1['design_steels'][steel_idx1]
-                steel2 = group2['design_steels'][steel_idx2]
-                
-                group1['design_steels'][steel_idx1] = steel2
-                group2['design_steels'][steel_idx2] = steel1
-                
-                # 重新计算组属性
-                group1['design_length'] = self._calculate_group_length(group1['design_steels'])
-                group2['design_length'] = self._calculate_group_length(group2['design_steels'])
-                
-                group1['module_steels'] = self._assign_modules([
-                    {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
-                    for sid in group1['design_steels']
-                ])
-                group2['module_steels'] = self._assign_modules([
-                    {'id': sid, 'length': self.design_length_map.get(sid, 0)} 
-                    for sid in group2['design_steels']
-                ])
-        
-        return solution
-
-    def _calculate_group_length(self, design_steels):
-        """计算设计钢材组的总长度"""
-        total = 0
-        for steel_id in design_steels:
-            total += self.design_length_map.get(steel_id, 0)
-        return total
-
 @app.route('/optimize', methods=['POST'])
 def optimize():
     """启动优化计算"""
-    global optimization_status
+    global optimization_status, optimization_thread, stop_optimization
     
     # 重置优化状态
     optimization_status = {
@@ -792,8 +454,11 @@ def optimize():
         'progress': 0,
         'current_loss': 0,
         'best_loss': 0,
-        'calc_time': 0
+        'calc_time': 0,
+        'generation': 0
     }
+    
+    stop_optimization = False
     
     socketio.emit('progress_update', optimization_status)
     
@@ -834,55 +499,96 @@ def optimize():
         if not design_steels:
             return jsonify({'error': '没有设计钢材数据'}), 400
         
-        # 创建优化器并运行
-        optimizer = SteelOptimizer(design_steels, module_steels, params, socketio)
-        result = optimizer.optimize()
-        
-        # 保存结果到数据库
-        conn = sqlite3.connect('data/database.db')
-        c = conn.cursor()
-        
-        # 保存优化结果摘要
-        c.execute('''INSERT INTO optimization_results 
-                     (loss_rate, cost_saving, calc_time, stop_reason) 
-                     VALUES (?, ?, ?, ?)''',
-                  (result['loss_rate'], result['cost_saving'], result['calc_time'], result['stop_reason']))
-        result_id = c.lastrowid
-        
-        # 保存组合详情
-        for i, group in enumerate(result['combinations']):
-            # 确保design_steels是字符串
-            design_steels_str = ','.join(group['design_steels'])
+        # 在线程中运行优化
+        def run_optimization():
+            global optimization_status, stop_optimization
             
-            # 格式化模数钢材
-            module_steels_list = []
-            for m in group['module_steels']:
-                module_steels_list.append(f"{m['id']}:{m['count']}")
-            module_steels_str = ','.join(module_steels_list)
-            
-            c.execute('''INSERT INTO combination_details 
-                         (result_id, group_id, design_steels, design_length, 
-                          module_steels, module_length, difference, loss_rate)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (result_id, 
-                       f"G{i+1}",
-                       design_steels_str, 
-                       group['design_length'],
-                       module_steels_str, 
-                       group['module_length'], 
-                       group['difference'], 
-                       group['loss_rate']))
+            try:
+                # 创建优化器并运行
+                optimizer = SteelOptimizer(design_steels, module_steels, params)
+                result = optimizer.optimize()
+                
+                # 计算最终结果
+                calc_time = time.time() - start_time
+                
+                # 更新最终状态
+                optimization_status = {
+                    'running': False,
+                    'progress': 100,
+                    'current_loss': result['loss_rate'],
+                    'best_loss': result['loss_rate'],
+                    'calc_time': calc_time,
+                    'generation': optimizer.generation
+                }
+                
+                # 保存结果到数据库
+                conn = sqlite3.connect('data/database.db')
+                c = conn.cursor()
+                
+                # 保存优化结果摘要
+                c.execute('''INSERT INTO optimization_results 
+                            (loss_rate, cost_saving, calc_time, stop_reason) 
+                            VALUES (?, ?, ?, ?)''',
+                        (result['loss_rate'], result['cost_saving'], result['calc_time'], result['stop_reason']))
+                result_id = c.lastrowid
+                
+                # 保存组合详情
+                for i, group in enumerate(result['combinations']):
+                    # 确保design_steels是字符串
+                    design_steels_str = ','.join(group['design_steels'])
+                    
+                    # 使用JSON存储模数钢材
+                    module_steels_str = json.dumps(group['module_steels'])
+                    
+                    c.execute('''INSERT INTO combination_details 
+                                (result_id, group_id, design_steels, design_length, 
+                                module_steels, module_length, difference, loss_rate)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (result_id, 
+                            f"G{i+1}",
+                            design_steels_str, 
+                            group['design_length'],
+                            module_steels_str, 
+                            group['module_length'], 
+                            group['difference'], 
+                            group['loss_rate']))
+                
+                conn.commit()
+                conn.close()
+                
+                # 发送最终结果
+                socketio.emit('progress_update', optimization_status)
+                socketio.emit('optimization_complete', {
+                    **result, 
+                    'result_id': result_id,
+                    'stop_reason': result['stop_reason']
+                })
+                
+            except Exception as e:
+                logging.error(f"优化线程错误: {str(e)}\n{traceback.format_exc()}")
+                optimization_status['running'] = False
+                socketio.emit('progress_update', optimization_status)
+                socketio.emit('optimization_error', {'error': str(e)})
         
-        conn.commit()
-        conn.close()
+        # 启动优化线程
+        start_time = time.time()
+        optimization_thread = threading.Thread(target=run_optimization)
+        optimization_thread.start()
         
-        return jsonify({**result, 'result_id': result_id})
+        return jsonify({'message': '优化已开始'})
     
     except Exception as e:
-        logging.error(f"优化错误: {str(e)}\n{traceback.format_exc()}")
+        logging.error(f"优化启动错误: {str(e)}\n{traceback.format_exc()}")
         optimization_status['running'] = False
         socketio.emit('progress_update', optimization_status)
-        return jsonify({'error': f"优化过程中出错: {str(e)}"}), 500
+        return jsonify({'error': f"优化启动失败: {str(e)}"}), 500
+
+@app.route('/stop-optimization', methods=['POST'])
+def stop_optimization_request():
+    """停止优化计算"""
+    global stop_optimization
+    stop_optimization = True
+    return jsonify({'message': '优化停止请求已接收'})
 
 @app.route('/export/excel/<result_id>')
 def export_excel(result_id):
@@ -917,8 +623,10 @@ def export_excel(result_id):
         for detail in details:
             # 格式化设计钢材显示
             design_steels = detail[3].replace(',', ', ') if detail[3] else ""
-            # 格式化模数钢材显示
-            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
+            
+            # 解析模数钢材JSON
+            module_steels_list = json.loads(detail[5])
+            module_steels = ", ".join([f"{m['id']}×{m['count']}" for m in module_steels_list])
             
             data.append([
                 detail[2],  # group_id
@@ -1038,8 +746,10 @@ def export_pdf(result_id):
         for detail in details:
             # 格式化设计钢材显示
             design_steels = detail[3].replace(',', ', ') if detail[3] else ""
-            # 格式化模数钢材显示
-            module_steels = detail[5].replace(':', 'x').replace(',', ', ') if detail[5] else ""
+            
+            # 解析模数钢材JSON
+            module_steels_list = json.loads(detail[5])
+            module_steels = ", ".join([f"{m['id']}×{m['count']}" for m in module_steels_list])
             
             pdf.cell(col_widths[0], 10, detail[2], 1)  # group_id
             pdf.cell(col_widths[1], 10, design_steels[:35], 1)  # design_steels
