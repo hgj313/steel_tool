@@ -1,9 +1,8 @@
 import time
 import random
 import logging
-import math
+import traceback
 from collections import defaultdict
-from functools import lru_cache
 
 class SteelOptimizer:
     def __init__(self, design_steels, module_steels, params):
@@ -95,57 +94,87 @@ class SteelOptimizer:
         
         return combination
 
-    # 修改 _find_best_combination 方法
-def _find_best_combination(self, required_length):
-    """使用动态规划找到最接近的组合 - 改进算法"""
-    tolerance = self.params['tolerance']
-    
-    # 将长度转换为整数（毫米）
-    required_length = int(round(required_length))
-    tolerance = int(round(tolerance))
-    
-    # 如果所需长度超过20000mm，使用贪心算法
-    if required_length > 20000:
-        return self._greedy_combination(required_length)
+    def _find_best_combination(self, required_length):
+        """使用动态规划找到最接近的组合 - 改进算法"""
+        tolerance = self.params['tolerance']
         
-    min_length = max(0, required_length - tolerance)
-    max_length = required_length + tolerance
-    
-    # 初始化DP数组
-    dp = [None] * (max_length + 1)
-    dp[0] = []
-    
-    # 对每个模数钢材
-    for module in self.module_steels_sorted:
-        # 转换为整数毫米
-        module_length = int(round(module['length']))
+        # 将长度转换为整数（毫米）
+        required_length = int(round(required_length))
+        tolerance = int(round(tolerance))
         
-        for current_length in range(module_length, len(dp)):
-            if dp[current_length - module_length] is not None:
-                new_combination = dp[current_length - module_length] + [module]
-                # ... 保持原有逻辑 ...
-    
-    # ... 保持原有逻辑 ...
-                    # 如果当前长度还没有组合，或者新组合的钢材数量更少
-                    if dp[current_length] is None or len(new_combination) < len(dp[current_length]):
-                        dp[current_length] = new_combination
-                    # 如果当前长度在允许范围内，记录
-                    if min_length <= current_length <= max_length:
-                        # 转换组合格式
-                        combination_formatted = []
-                        # 统计每个钢材的数量
-                        count_dict = defaultdict(int)
-                        for m in new_combination:
-                            count_dict[m['id']] += 1
-                        for m_id, count in count_dict.items():
-                            combination_formatted.append({
-                                'id': m_id, 
-                                'length': self.module_length_map[m_id], 
-                                'count': count
-                            })
-                        return combination_formatted
+        # 添加边界检查
+        if required_length <= 0:
+            logging.error(f"无效的 required_length: {required_length}")
+            # 使用最小的模数钢材
+            min_module = min(self.module_steels, key=lambda m: m['length'])
+            return [{'id': min_module['id'], 'length': min_module['length'], 'count': 1}]
         
-        # 如果没有找到合适的组合，则使用最接近的单个钢材
+        # 如果所需长度超过20000mm，使用贪心算法
+        if required_length > 20000:
+            return self._greedy_combination(required_length)
+            
+        min_length = max(0, required_length - tolerance)
+        max_length = required_length + tolerance
+        
+        # 确保 max_length 不会过大
+        if max_length > 50000:  # 设置最大上限
+            return self._greedy_combination(required_length)
+        
+        # 记录转换后的值
+        logging.info(f"动态规划参数: required_length={required_length}, "
+                     f"min_length={min_length}, max_length={max_length}, "
+                     f"tolerance={tolerance}")
+        
+        try:
+            # 初始化DP数组
+            dp = [None] * (max_length + 1)
+            dp[0] = []
+            
+            # 对每个模数钢材
+            for module in self.module_steels_sorted:
+                # 转换为整数毫米
+                module_length = int(round(module['length']))
+                
+                # 跳过无效长度
+                if module_length <= 0:
+                    logging.warning(f"跳过无效的模数钢材长度: {module}")
+                    continue
+                    
+                # 确保 module_length 在有效范围内
+                if module_length >= len(dp):
+                    continue
+                    
+                # 动态规划核心逻辑
+                for current_length in range(module_length, len(dp)):
+                    if current_length - module_length < 0:
+                        continue
+                    
+                    if dp[current_length - module_length] is not None:
+                        new_combination = dp[current_length - module_length] + [module]
+                        
+                        # 如果当前长度还没有组合，或者新组合的钢材数量更少
+                        if dp[current_length] is None or len(new_combination) < len(dp[current_length]):
+                            dp[current_length] = new_combination
+                        
+                        # 如果当前长度在允许范围内，记录
+                        if min_length <= current_length <= max_length:
+                            # 转换组合格式
+                            combination_formatted = []
+                            # 统计每个钢材的数量
+                            count_dict = defaultdict(int)
+                            for m in new_combination:
+                                count_dict[m['id']] += 1
+                            for m_id, count in count_dict.items():
+                                combination_formatted.append({
+                                    'id': m_id, 
+                                    'length': self.module_length_map[m_id], 
+                                    'count': count
+                                })
+                            return combination_formatted
+        except Exception as e:
+            logging.error(f"动态规划错误: {str(e)}\n{traceback.format_exc()}")
+        
+        # 回退机制：如果没有找到合适的组合，则使用最接近的单个钢材
         closest = min(self.module_steels, key=lambda m: abs(m['length'] - required_length))
         return [{'id': closest['id'], 'length': closest['length'], 'count': 1}]
 
@@ -188,6 +217,11 @@ def _find_best_combination(self, required_length):
     def optimize(self):
         """执行优化算法 - 改进遗传算法"""
         global stop_optimization
+        
+        # 记录优化参数
+        logging.info(f"开始优化，参数: {self.params}")
+        logging.info(f"设计钢材数量: {len(self.design_steels)}")
+        logging.info(f"模数钢材: {self.module_steels}")
         
         population_size = 30
         population = [self._generate_random_solution() for _ in range(population_size)]
