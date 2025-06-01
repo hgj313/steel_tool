@@ -19,31 +19,14 @@ import json
 from collections import defaultdict
 from flask_socketio import SocketIO, emit
 
-# 修复循环导入问题 - 移除无效的自我导入
-# 并在此处添加 SteelOptimizer 类定义
 class SteelOptimizer:
     def __init__(self, design_steels, module_steels, params):
-        """
-        钢材优化器初始化
-        
-        参数:
-        design_steels: 设计钢材列表 [{'id': int, 'original_id': str, 'length': float, 'quantity': int}]
-        module_steels: 模数钢材列表 [{'id': int, 'length': float}]
-        params: 优化参数 {
-            'tolerance': float,  # 公差
-            'cut_loss': float,   # 切割损耗
-            'weld_loss': float,  # 焊接损耗
-            'max_time': int,     # 最大优化时间(秒)
-            'target_loss': float,# 目标损耗率
-            'density': float,    # 钢材密度
-            'price_per_kg': float # 每公斤价格
-        }
-        """
         self.design_steels = design_steels
         self.module_steels = module_steels
         self.params = params
         self.stop_requested = False
         self.generation = 0
+        self.history = []  # 添加历史记录
         
         # 计算总设计长度
         self.total_design_length = sum(
@@ -54,17 +37,16 @@ class SteelOptimizer:
         self.start_time = time.time()
         
     def optimize(self):
-        """
-        执行优化算法
-        
-        返回优化结果字典
-        """
         logging.info("优化开始，参数: %s", self.params)
         
-        # 模拟优化过程 - 实际应用中应替换为真实算法
+        best_loss = 50.0  # 初始最佳损耗率
+        first_target_achieved = False
+        first_target_combinations = None
+        
         while not self.stop_requested:
             # 更新进度
             elapsed_time = time.time() - self.start_time
+            self.generation += 1
             
             # 检查是否超时
             if elapsed_time > self.params['max_time']:
@@ -73,10 +55,28 @@ class SteelOptimizer:
                 break
                 
             # 模拟进度更新
-            self.generation += 1
             progress = min(100, (elapsed_time / self.params['max_time']) * 100)
             current_loss = max(5.0, 50.0 - (progress * 0.45))  # 模拟损耗率下降
-            best_loss = max(4.5, current_loss - random.uniform(0.5, 2.0))
+            # 随机波动
+            current_loss += random.uniform(-1.0, 1.0)
+            
+            # 更新最佳损耗率
+            if current_loss < best_loss:
+                best_loss = current_loss
+                
+            # 检查是否首次达到目标
+            if not first_target_achieved and best_loss <= self.params['target_loss']:
+                first_target_achieved = True
+                first_target_combinations = self._generate_sample_combinations()
+                logging.info(f"首次达到目标损耗率: {best_loss}%")
+            
+            # 记录历史
+            self.history.append({
+                'generation': self.generation,
+                'loss_rate': current_loss,
+                'best_loss': best_loss,
+                'calc_time': elapsed_time
+            })
             
             # 广播进度
             optimization_status = {
@@ -109,12 +109,12 @@ class SteelOptimizer:
             'loss_rate': loss_rate,
             'cost_saving': round(cost_saving, 2),
             'combinations': self._generate_sample_combinations(),
-            'first_target_combinations': self._generate_sample_combinations(),
+            'first_target_combinations': first_target_combinations,
+            'history': self.history,  # 添加历史数据
             'stop_reason': '达到目标损耗率' if loss_rate <= self.params['target_loss'] else '达到最大优化时间'
         }
     
     def _generate_sample_combinations(self):
-        """生成示例组合数据"""
         combinations = []
         group_id = 1
         
@@ -132,7 +132,7 @@ class SteelOptimizer:
                 'group_id': f"G{group_id}",
                 'design_steels': [steel['original_id']],
                 'design_length': design_length,
-                'module_steels': [{'id': f"B{closest_module['id']}", 'count': 1}],
+                'module_steels': [{'id': f"B{closest_module['id']}", 'length': closest_module['length'], 'count': 1}],
                 'module_length': closest_module['length'],
                 'difference': abs(closest_module['length'] - design_length),
                 'loss_rate': round(
@@ -674,7 +674,7 @@ def optimize():
                             0))  # 0表示最佳组合
                 
                 # 保存首次达标组合
-                if 'first_target_combinations' in result:
+                if 'first_target_combinations' in result and result['first_target_combinations']:
                     for i, group in enumerate(result['first_target_combinations']):
                         design_steels_str = ','.join(group['design_steels'])
                         module_steels_str = json.dumps(group['module_steels'])
