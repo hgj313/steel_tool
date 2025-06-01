@@ -502,59 +502,39 @@ def optimize():
         if not design_steels:
             return jsonify({'error': '没有设计钢材数据'}), 400
         
-def run_optimization():
-    global optimization_status, current_optimizer
-    
-    try:
-        # 添加应用上下文
-        with app.app_context():
-            optimizer = SteelOptimizer(design_steels, module_steels, params)
-            current_optimizer = optimizer
-            result = optimizer.optimize()
-                
-                calc_time = time.time() - start_time
-                
-                optimization_status = {
-                    'running': False,
-                    'progress': 100,
-                    'current_loss': result['loss_rate'],
-                    'best_loss': result['loss_rate'],
-                    'calc_time': calc_time,
-                    'generation': optimizer.generation
-                }
-                
-                conn = sqlite3.connect('data/database.db')
-                c = conn.cursor()
-                
-                # 保存优化结果摘要
-                c.execute('''INSERT INTO optimization_results 
-                            (loss_rate, cost_saving, calc_time, stop_reason) 
-                            VALUES (?, ?, ?, ?)''',
-                        (result['loss_rate'], result['cost_saving'], calc_time, result['stop_reason']))
-                result_id = c.lastrowid
-                
-                # 保存最佳组合
-                for i, group in enumerate(result['combinations']):
-                    design_steels_str = ','.join(group['design_steels'])
-                    module_steels_str = json.dumps(group['module_steels'])
+        def run_optimization():
+            global optimization_status, current_optimizer
+            
+            try:
+                # 添加应用上下文
+                with app.app_context():
+                    optimizer = SteelOptimizer(design_steels, module_steels, params)
+                    current_optimizer = optimizer
+                    result = optimizer.optimize()
                     
-                    c.execute('''INSERT INTO combination_details 
-                                (result_id, group_id, design_steels, design_length, 
-                                module_steels, module_length, difference, loss_rate, is_first_target)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (result_id, 
-                            group['group_id'],
-                            design_steels_str, 
-                            group['design_length'],
-                            module_steels_str, 
-                            group['module_length'], 
-                            group['difference'], 
-                            group['loss_rate'],
-                            0))  # 0表示最佳组合
-                
-                # 保存首次达标组合（如果存在）
-                if 'first_target_combinations' in result:
-                    for i, group in enumerate(result['first_target_combinations']):
+                    calc_time = time.time() - start_time
+                    
+                    optimization_status = {
+                        'running': False,
+                        'progress': 100,
+                        'current_loss': result['loss_rate'],
+                        'best_loss': result['loss_rate'],
+                        'calc_time': calc_time,
+                        'generation': optimizer.generation
+                    }
+                    
+                    conn = sqlite3.connect('data/database.db')
+                    c = conn.cursor()
+                    
+                    # 保存优化结果摘要
+                    c.execute('''INSERT INTO optimization_results 
+                                (loss_rate, cost_saving, calc_time, stop_reason) 
+                                VALUES (?, ?, ?, ?)''',
+                            (result['loss_rate'], result['cost_saving'], calc_time, result['stop_reason']))
+                    result_id = c.lastrowid
+                    
+                    # 保存最佳组合
+                    for i, group in enumerate(result['combinations']):
                         design_steels_str = ','.join(group['design_steels'])
                         module_steels_str = json.dumps(group['module_steels'])
                         
@@ -570,17 +550,37 @@ def run_optimization():
                                 group['module_length'], 
                                 group['difference'], 
                                 group['loss_rate'],
-                                1))  # 1表示首次达标组合
-                
-                conn.commit()
-                conn.close()
-                
-                socketio.emit('progress_update', optimization_status)
-                socketio.emit('optimization_complete', {
-                    **result, 
-                    'result_id': result_id,
-                    'stop_reason': result['stop_reason']
-                })
+                                0))  # 0表示最佳组合
+                    
+                    # 保存首次达标组合（如果存在）
+                    if 'first_target_combinations' in result and result['first_target_combinations']:
+                        for i, group in enumerate(result['first_target_combinations']):
+                            design_steels_str = ','.join(group['design_steels'])
+                            module_steels_str = json.dumps(group['module_steels'])
+                            
+                            c.execute('''INSERT INTO combination_details 
+                                        (result_id, group_id, design_steels, design_length, 
+                                        module_steels, module_length, difference, loss_rate, is_first_target)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    (result_id, 
+                                    group['group_id'],
+                                    design_steels_str, 
+                                    group['design_length'],
+                                    module_steels_str, 
+                                    group['module_length'], 
+                                    group['difference'], 
+                                    group['loss_rate'],
+                                    1))  # 1表示首次达标组合
+                    
+                    conn.commit()
+                    conn.close()
+                    
+                    socketio.emit('progress_update', optimization_status)
+                    socketio.emit('optimization_complete', {
+                        **result, 
+                        'result_id': result_id,
+                        'stop_reason': result['stop_reason']
+                    })
                 
             except Exception as e:
                 logging.error(f"优化线程错误: {str(e)}\n{traceback.format_exc()}")
